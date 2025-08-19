@@ -50,13 +50,10 @@
             <RowDefinition Height="*"/>
             <RowDefinition Height="220"/>
         </Grid.RowDefinitions>
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="auto"/>
-        </Grid.ColumnDefinitions>
+        
 
         <!-- Toolbar -->
-        <DockPanel Grid.Row="0" Grid.Column="0" LastChildFill="False" Margin="8">
+        <DockPanel Grid.Row="0" LastChildFill="False" Margin="8">
             <Button Content="Start" Click="Start_Click"/>
             <Button Content="Stop" Click="Stop_Click"/>
             <Separator Width="16"/>
@@ -69,14 +66,8 @@
             <Button Content="Clear Signals" Click="ClearSignals_Click"/>
             <Button Content="Export CSV" Click="ExportCsv_Click"/>
         </DockPanel>
-        <DataGrid  Grid.Column="1" Grid.Row="2"  HorizontalAlignment="Right"  Width="auto" x:Name="mydict" AutoGenerateColumns="False">
-            <DataGrid.Columns>
-                <DataGridTextColumn Header="Symbol" Binding="{Binding Key}" />
-                <DataGridTextColumn Header="Trading Symbol" Binding="{Binding Value}" />
-            </DataGrid.Columns>
-        </DataGrid>
         <!-- Signals Grid -->
-        <DataGrid Grid.Row="1" Grid.Column="0"  ItemsSource="{Binding SignalsView}" x:Name="SignalsGrid">
+        <!--<DataGrid Grid.Row="1" ItemsSource="{Binding SignalsView}" x:Name="SignalsGrid">
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Time" Binding="{Binding Time, StringFormat=HH:mm:ss}" Width="80"/>
                 <DataGridTextColumn Header="Symbol" Binding="{Binding Symbol}" Width="160"/>
@@ -95,8 +86,82 @@
                 </DataGridTemplateColumn>
                 <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*"/>
             </DataGrid.Columns>
+        </DataGrid>-->
+        <!--<DataGrid Grid.Row="1" x:Name="SignalsGrid" AutoGenerateColumns="False" IsReadOnly="True"
+          ItemsSource="{Binding Signals}">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Time" Binding="{Binding Time}" Width="150"/>
+                <DataGridTextColumn Header="Symbol" Binding="{Binding Symbol}" Width="100"/>
+                <DataGridTextColumn Header="LTP" Binding="{Binding Ltp}" Width="80"/>
+                <DataGridTextColumn Header="VWAP" Binding="{Binding VWAP}" Width="80"/>
+                <DataGridTextColumn Header="CVD 1m" Binding="{Binding Cvd1m}" Width="80"/>
+                <DataGridTextColumn Header="Vol 1m" Binding="{Binding Vol1m}" Width="80"/>
+                <DataGridTextColumn Header="High" Binding="{Binding RecentHigh}" Width="80"/>
+                <DataGridTextColumn Header="Low" Binding="{Binding RecentLow}" Width="80"/>
+                <DataGridTextColumn Header="Signal" Binding="{Binding SignalType}" Width="120"/>
+                <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" Width="*"/>
+            </DataGrid.Columns>
+        </DataGrid>-->
+        <!--<DataGrid Grid.Row="1" x:Name="SignalsGrid" ItemsSource="{Binding Signals}" AutoGenerateColumns="False">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Time" Binding="{Binding Time}" />
+                <DataGridTextColumn Header="Symbol" Binding="{Binding Symbol}" />
+                <DataGridTextColumn Header="LTP" Binding="{Binding Ltp}" />
+                <DataGridTextColumn Header="VWAP" Binding="{Binding VWAP}" />
+                <DataGridTextColumn Header="CVD1m" Binding="{Binding Cvd1m}" />
+                <DataGridTextColumn Header="Vol1m" Binding="{Binding Vol1m}" />
+                <DataGridTextColumn Header="High" Binding="{Binding RecentHigh}" />
+                <DataGridTextColumn Header="Low" Binding="{Binding RecentLow}" />
+                <DataGridTextColumn Header="SignalType" Binding="{Binding SignalType}" />
+                <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" />
+            </DataGrid.Columns>
+
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding SignalType}" Value="ICEBERG_BUY">
+                            <Setter Property="Background" Value="LightGreen"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding SignalType}" Value="ICEBERG_SELL">
+                            <Setter Property="Background" Value="LightCoral"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding SignalType}" Value="ACCUMULATION_LONG">
+                            <Setter Property="Background" Value="LightBlue"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding SignalType}" Value="BREAKOUT_LONG">
+                            <Setter Property="Background" Value="Orange"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
+        </DataGrid>-->
+        <DataGrid Grid.Row="1" x:Name="SignalsGrid" ItemsSource="{Binding SignalsView}" AutoGenerateColumns="False">
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Style.Triggers>
+                        <!-- Buy signals -->
+                        <DataTrigger Binding="{Binding SignalDirection}" Value="BUY">
+                            <Setter Property="Background" Value="LightGreen"/>
+                        </DataTrigger>
+
+                        <!-- Sell signals -->
+                        <DataTrigger Binding="{Binding SignalDirection}" Value="SELL">
+                            <Setter Property="Background" Value="LightCoral"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
+
+            <!-- Example columns -->
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Time" Binding="{Binding Time}" />
+                <DataGridTextColumn Header="Symbol" Binding="{Binding Symbol}" />
+                <DataGridTextColumn Header="LTP" Binding="{Binding Ltp}" />
+                <DataGridTextColumn Header="CVD1m" Binding="{Binding Cvd1m}" />
+                <DataGridTextColumn Header="Signal" Binding="{Binding SignalType}" />
+            </DataGrid.Columns>
         </DataGrid>
-        
+
         <!-- Log -->
         <TextBox Grid.Row="2" Grid.Column="0"  VerticalAlignment="Bottom" Height="50" x:Name="OutputTextBox" IsReadOnly="True"
           HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
