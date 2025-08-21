@@ -7,6 +7,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.WebSockets;
@@ -45,112 +46,62 @@ namespace CVD
         public string accessToken;
         public event PropertyChangedEventHandler PropertyChanged;
 
+       
         private void OnPropertyChanged([CallerMemberName] string name = null)
         {
-            var handler = PropertyChanged;
-            if (handler != null) handler(this, new PropertyChangedEventArgs(name));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
         }
+        //private void OnPropertyChanged([CallerMemberName] string name = null)
+        //{
+        //    var handler = PropertyChanged;
+        //    if (handler != null) handler(this, new PropertyChangedEventArgs(name));
+        //}
 
         public MainWindow()
         {
             InitializeComponent();
 
-            // 1️⃣ Initialize signals list
+            //_instrumentNameMap = new Dictionary<string, string>();
+            //Getsymbollist();
             //Signals = new ObservableCollection<SignalRow>();
             //SignalsView = CollectionViewSource.GetDefaultView(Signals);
 
-            //_instrumentNameMap = new Dictionary<string, string>();
-            //Getsymbollist();
+            //this.DataContext = this;  // <- binds DataGrid to this window's properties
 
 
-            //// 3️⃣ Initialize engine once
+
             //_engine = new OrderFlowEngine(_instrumentNameMap);
-
-            //// 4️⃣ Hook: engine -> UI
+            
             //_engine.OnSignal = (symbolName, t, price, s, reason, sigType) =>
             //{
-            //    // Guard against null state
             //    if (s == null) return;
 
-            //    Dispatcher.Invoke(() =>
+            //    bool important = sigType.Contains("ICEBERG") || Math.Abs(s.Cvd1m.Sum) >= 100;
+            //    if (!important) return;
+
+            //    _pendingSignals.Enqueue(new SignalRow
             //    {
-            //        Signals.Insert(0, new SignalRow
-            //        {
-            //            Time = t,
-            //            Symbol = symbolName,   // already mapped
-            //            Ltp = price,
-            //            VWAP = s.VWAP ?? double.NaN,
-            //            Cvd1m = (long)Math.Round(s.Cvd1m?.Sum ?? 0),
-            //            Vol1m = (long)Math.Round(s.Vol1m?.Sum ?? 0),
-            //            RecentHigh = s.RecentHigh,
-            //            RecentLow = s.RecentLow,
-            //            SignalType = sigType,
-            //            Reason = reason
-            //        });
+            //        Time = t,
+            //        Symbol = symbolName,
+            //        Ltp = price,
+            //        VWAP = s.VWAP ?? double.NaN,
+            //        Cvd1m = (long)Math.Round(s.Cvd1m?.Sum ?? 0),
+            //        Vol1m = (long)Math.Round(s.Vol1m?.Sum ?? 0),
+            //        RecentHigh = s.RecentHigh,
+            //        RecentLow = s.RecentLow,
+            //        SignalType = sigType,
+            //        Reason = reason
             //    });
             //};
+            //StartSignalUpdater();
+
             _instrumentNameMap = new Dictionary<string, string>();
             Getsymbollist();
             Signals = new ObservableCollection<SignalRow>();
             SignalsView = CollectionViewSource.GetDefaultView(Signals);
-
-            // Filter + sort only important signals
-            //SetupSignalsView();
-            //Signals = new ObservableCollection<SignalRow>();
-
-            //// Very important:
-            this.DataContext = this;  // <- binds DataGrid to this window's properties
-
-
+            this.DataContext = this;
 
             _engine = new OrderFlowEngine(_instrumentNameMap);
-            //_engine.OnSignal = (symbolName, t, price, s, reason, sigType) =>
-            //{
-            //    if (s == null) return;
-
-            //    // 1️⃣ Calculate absolute CVD for filtering
-            //    long absCvd = (long)Math.Round(s.Cvd1m?.Sum ?? 0);
-            //    long vol1m = (long)Math.Round(s.Vol1m?.Sum ?? 0);
-
-            //    // 2️⃣ Only show signals with significant CVD or volume
-            //    const long CvdThreshold = 200;  // adjust per liquidity
-            //    const long VolThreshold = 500;  // optional, filter low-volume noise
-
-            //    if (Math.Abs(absCvd) < CvdThreshold && vol1m < VolThreshold)
-            //        return; // skip minor moves
-
-            //    // 3️⃣ Detect potential iceberg orders
-            //    bool isIcebergBuy = s.StackEvents > s.PullEvents && price < (s.VWAP ?? price) * 0.998;
-            //    bool isIcebergSell = s.PullEvents > s.StackEvents && price > (s.VWAP ?? price) * 1.002;
-
-            //    string finalType = sigType;  // keep original type if not iceberg
-            //    if (isIcebergBuy) finalType = "ICEBERG_BUY";
-            //    if (isIcebergSell) finalType = "ICEBERG_SELL";
-
-            //    string finalReason = reason;
-            //    if (isIcebergBuy || isIcebergSell)
-            //    {
-            //        finalReason += $" | Stack={s.StackEvents}, Pull={s.PullEvents}, CVD={absCvd}";
-            //    }
-
-            //    // 4️⃣ Update DataGrid
-            //    Dispatcher.Invoke(() =>
-            //    {
-            //        Signals.Insert(0, new SignalRow
-            //        {
-            //            Time = t,
-            //            Symbol = symbolName,
-            //            Ltp = price,
-            //            VWAP = s.VWAP ?? double.NaN,
-            //            Cvd1m = absCvd,
-            //            Vol1m = vol1m,
-            //            RecentHigh = s.RecentHigh,
-            //            RecentLow = s.RecentLow,
-            //            SignalType = finalType,
-            //            Reason = finalReason
-            //        });
-            //    });
-            //};
 
             _engine.OnSignal = (symbolName, t, price, s, reason, sigType) =>
             {
@@ -173,7 +124,9 @@ namespace CVD
                     Reason = reason
                 });
             };
+
             StartSignalUpdater();
+
         }
 
         private void SetupSignalsView()
@@ -284,30 +237,50 @@ namespace CVD
             try
             {
                 var path = System.IO.Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "signals.csv");
+                    Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                    $"signals_{DateTime.Now:yyyyMMdd_HHmmss}.csv");
+
                 var lines = new List<string>();
-                lines.Add("Time,Symbol,LTP,VWAP,CVD1m,Vol1m,RecentHigh,RecentLow,Signal,Reason");
+
+                // Add CSV header with proper escaping
+                lines.Add("\"Time\",\"Symbol\",\"LTP\",\"VWAP\",\"CVD1m\",\"Vol1m\",\"RecentHigh\",\"RecentLow\",\"Signal\",\"Reason\",\"SignalDirection\"");
+
                 foreach (var s in Signals.Reverse())
                 {
-                    var reason = (s.Reason ?? "").Replace("\"", "'");
-                    lines.Add(string.Format("{0:HH:mm:ss},{1},{2:F2},{3:F2},{4},{5},{6:F2},{7:F2},{8},\"{9}\"",
-                        s.Time, s.Symbol, s.Ltp, s.VWAP, s.Cvd1m, s.Vol1m, s.RecentHigh, s.RecentLow, s.SignalType, reason));
+                    // Proper CSV escaping: replace quotes with double quotes and wrap in quotes
+                    var reason = (s.Reason ?? "").Replace("\"", "\"\"");
+                    var symbol = (s.Symbol ?? "").Replace("\"", "\"\"");
+                    var signalType = (s.SignalType ?? "").Replace("\"", "\"\"");
+
+                    lines.Add($"\"{s.Time:HH:mm:ss}\",\"{symbol}\",{s.Ltp:F2},{s.VWAP:F2},{s.Cvd1m},{s.Vol1m},{s.RecentHigh:F2},{s.RecentLow:F2},\"{signalType}\",\"{reason}\",\"{s.SignalDirection}\"");
                 }
-                //await System.IO.File.WriteAllLinesAsync(path, lines);
 
+                // Actually write the file (uncomment and fix this line)
+                using (var writer = new StreamWriter(path, false, Encoding.UTF8))
+                {
+                    foreach (var line in lines)
+                    {
+                        await writer.WriteLineAsync(line);
+                    }
+                }
 
-                OutputTextBox.AppendText("Exported: " + path + "\n");
+                OutputTextBox.AppendText($"Exported: {path}\n");
+
+                // Optional: Open the file after export
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = path,
+                    UseShellExecute = true
+                });
             }
             catch (Exception ex)
             {
-                OutputTextBox.AppendText("Export error: " + ex.Message + "\n");
+                OutputTextBox.AppendText($"Export error: {ex.Message}\n");
             }
-        }
-
-        // =================== Your Startup ===================
+        }// =================== Your Startup ===================
         // NOTE: you already have 'Start
         // Async' skeleton; this merges engine + UI.
-        
+
         private async Task Getsymbollist()
         {
             var dataFetcher = new InstrumentsData(accessToken); // <-- your class/field
@@ -416,26 +389,6 @@ namespace CVD
             return null;
         }
 
-        private async Task SendSubscriptionAsync()
-        {
-            try
-            {
-                var subscriptionJson = $@"{{
-                    ""guid"": ""{Guid.NewGuid()}"",
-                    ""method"": ""sub"",
-                    ""data"": {{
-                        ""mode"": ""full"",
-                        ""instrumentKeys"": [""NSE_EQ|INE002A01018"", ""NSE_INDEX|Nifty 50""]
-                    }}
-                }}";
-                var subscriptionBytes = Encoding.UTF8.GetBytes(subscriptionJson);
-                await webSocket.SendAsync(new ArraySegment<byte>(subscriptionBytes), WebSocketMessageType.Binary, true, CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                Dispatcher.Invoke(() => OutputTextBox.Text += $"Error sending subscription: {ex.Message}\n");
-            }
-        }
         private async Task SendSubscriptionAsync(List<string> instrumentKeys)
         {
             try
@@ -639,20 +592,6 @@ namespace CVD
 
     }
 
-    // ========================= Data rows =========================
-    //public class SignalRow
-    //{
-    //    public DateTime Time { get; set; }
-    //    public string Symbol { get; set; }
-    //    public double Ltp { get; set; }
-    //    public double VWAP { get; set; }
-    //    public long Cvd1m { get; set; }
-    //    public long Vol1m { get; set; }
-    //    public double RecentHigh { get; set; }
-    //    public double RecentLow { get; set; }
-    //    public string SignalType { get; set; }
-    //    public string Reason { get; set; }
-    //}
     public class SignalRow
     {
         public DateTime Time { get; set; }
@@ -772,7 +711,6 @@ namespace CVD
         }
     }
 
-
     public class OrderFlowEngine
     {
         private readonly ConcurrentDictionary<string, InstrumentState> _state =
@@ -781,7 +719,11 @@ namespace CVD
         private readonly Dictionary<string, string> _instrumentNameMap;
         private readonly Dictionary<string, double> _lastCvd = new Dictionary<string, double>();
 
-        private const double SpikeThreshold = 5000; // adjust for your liquidity
+        // Threshold configuration
+        private const double SpikeThresholdPercent = 0.1; // 10% of 1-min volume
+        private const double MinSpikeThreshold = 50; // Minimum absolute threshold
+        private const double VolumeThreshold = 1000; // Minimum volume to consider
+        private const double SignificantCvdThreshold = 100; // Absolute CVD threshold for important signals
 
         public OrderFlowEngine(Dictionary<string, string> instrumentNameMap)
         {
@@ -860,22 +802,28 @@ namespace CVD
             double lastCvd = _lastCvd.TryGetValue(key, out var c) ? c : 0;
             double delta = currentCvd - lastCvd;
 
-            if (Math.Abs(delta) >= SpikeThreshold)
+            // Use dynamic threshold based on volume
+            double avgVol = s.Vol1m.Sum;
+            double dynamicThreshold = Math.Max(MinSpikeThreshold, avgVol * SpikeThresholdPercent);
+
+            // Only check for spikes if we have sufficient volume
+            if (avgVol >= VolumeThreshold && Math.Abs(delta) >= dynamicThreshold)
             {
                 fired = true;
                 type = "CVD_SPIKE";
-                reason = $"ΔCVD={delta:F0}, TotalCVD={currentCvd:F0}, Vol1m={s.Vol1m.Sum:F0}";
+                reason = $"ΔCVD={delta:F0} (Threshold: {dynamicThreshold:F0}), TotalCVD={currentCvd:F0}, Vol1m={avgVol:F0}";
             }
 
-            // always update lastCvd to avoid duplicate spikes
+            // Always update lastCvd to avoid duplicate spikes
             _lastCvd[key] = currentCvd;
 
-            // -------------------- Other rules (unchanged) --------------------
+            // -------------------- Other signal detection rules --------------------
             var vwap = s.VWAP;
-            if (!fired && vwap.HasValue && s.Vol1m.Sum > 0)
+            if (!fired && vwap.HasValue && s.Vol1m.Sum >= VolumeThreshold)
             {
+                // Accumulation pattern detection
                 bool nearLow = s.RecentLow > 0 && ltp <= s.RecentLow * 1.002;
-                bool cvdUp = s.Cvd1m.Sum > Math.Max(50.0, s.Vol1m.Sum * 0.05);
+                bool cvdUp = s.Cvd1m.Sum > Math.Max(SignificantCvdThreshold, s.Vol1m.Sum * 0.05);
                 bool flowUp = s.StackEvents > s.PullEvents;
 
                 if (nearLow && cvdUp && flowUp && ltp <= vwap.Value * 1.002)
@@ -886,10 +834,11 @@ namespace CVD
                 }
             }
 
-            if (!fired && s.RecentHigh > 0)
+            if (!fired && s.RecentHigh > 0 && s.Vol1m.Sum >= VolumeThreshold)
             {
+                // Breakout pattern detection
                 bool brokeHigh = ltp > s.RecentHigh * 1.0015;
-                bool cvdStrong = s.Cvd1m.Sum > Math.Max(100.0, s.Vol1m.Sum * 0.08);
+                bool cvdStrong = s.Cvd1m.Sum > Math.Max(SignificantCvdThreshold * 2, s.Vol1m.Sum * 0.08);
                 bool asksPulled = s.PullEvents > s.StackEvents;
 
                 if (brokeHigh && cvdStrong && asksPulled)
@@ -900,125 +849,286 @@ namespace CVD
                 }
             }
 
+            // -------------------- Extreme CVD values detection --------------------
+            if (!fired && Math.Abs(s.Cvd1m.Sum) >= SignificantCvdThreshold * 5 && s.Vol1m.Sum >= VolumeThreshold * 2)
+            {
+                fired = true;
+                type = s.Cvd1m.Sum > 0 ? "EXTREME_BUYING" : "EXTREME_SELLING";
+                reason = $"Extreme CVD={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}";
+            }
+
             // decay counters
             s.PullEvents = (int)(s.PullEvents * 0.7);
             s.StackEvents = (int)(s.StackEvents * 0.7);
 
             // -------------------- Emit Signal --------------------
+            //if (fired && OnSignal != null)
+            //{
+            //    string stockName = _instrumentNameMap.TryGetValue(key, out var name) ? name : key;
+            //    OnSignal(stockName, t, ltp, s, reason, type);
+            //}
             if (fired && OnSignal != null)
             {
                 string stockName = _instrumentNameMap.TryGetValue(key, out var name) ? name : key;
                 OnSignal(stockName, t, ltp, s, reason, type);
                 //Console.WriteLine($"Signal added: {stockName} {type} {reason}");
             }
-
             return Tuple.Create(fired, reason);
         }
-
-        //public Tuple<bool, string> OnTick(string key, DateTime t, double ltp, int ltq,
-        //                                  double bestBid, int bidQty, double bestAsk, int askQty)
-        //{
-        //    var s = Get(key);
-
-        //    // update book
-        //    if (s.LastBidQty != 0 && s.LastAskQty != 0)
-        //    {
-        //        if (askQty < (int)(s.LastAskQty * 0.6)) s.PullEvents++;
-        //        if (bidQty > (int)(s.LastBidQty * 1.4)) s.StackEvents++;
-        //    }
-        //    s.Book.BestBid = bestBid; s.Book.BestBidQty = bidQty;
-        //    s.Book.BestAsk = bestAsk; s.Book.BestAskQty = askQty;
-        //    s.LastBidQty = bidQty; s.LastAskQty = askQty;
-
-        //    // trade detection
-        //    bool hasTrade = !s.LastTradeTime.HasValue || t > s.LastTradeTime.Value ||
-        //                    !s.LastPrice.HasValue || ltp != s.LastPrice.Value ||
-        //                    !s.LastQty.HasValue || ltq != s.LastQty.Value;
-
-        //    if (hasTrade && ltq > 0)
-        //    {
-        //        double prevMid = (s.Book.BestBid + s.Book.BestAsk) / 2.0;
-        //        var side = ClassifyAggressor(ltp, s.Book, prevMid);
-
-        //        int signedVol = side == Side.Buy ? ltq : (side == Side.Sell ? -ltq : 0);
-        //        s.Cvd += signedVol;
-        //        s.Cvd1m.Add(t, signedVol);
-
-        //        s.UpdateVWAP(t, ltp, ltq);
-        //        s.UpdatePriceMicro(t, ltp);
-
-        //        s.LastPrice = ltp;
-        //        s.LastQty = ltq;
-        //        s.LastTradeTime = t;
-        //    }
-        //    else
-        //    {
-        //        s.UpdatePriceMicro(t, ltp);
-        //        s.LastPrice = ltp;
-        //    }
-
-        //    bool fired = false;
-        //    string reason = "";
-        //    string type = "";
-
-        //    // -------------------- Built-in CVD spike detection --------------------
-        //    double currentCvd = s.Cvd1m.Sum;
-        //    double lastCvd = _lastCvd.TryGetValue(key, out var c) ? c : 0;
-        //    double delta = currentCvd - lastCvd;
-
-        //    if (Math.Abs(delta) >= SpikeThreshold)
-        //    {
-        //        fired = true;
-        //        type = "CVD_SPIKE";
-        //        reason = $"ΔCVD={delta:F0}, TotalCVD={currentCvd:F0}, Vol1m={s.Vol1m.Sum:F0}";
-        //    }
-
-        //    _lastCvd[key] = currentCvd;
-
-        //    // -------------------- Other existing rules --------------------
-        //    var vwap = s.VWAP;
-        //    if (!fired && vwap.HasValue && s.Vol1m.Sum > 0)
-        //    {
-        //        bool nearLow = s.RecentLow > 0 && ltp <= s.RecentLow * 1.002;
-        //        bool cvdUp = s.Cvd1m.Sum > Math.Max(50.0, s.Vol1m.Sum * 0.05);
-        //        bool flowUp = s.StackEvents > s.PullEvents;
-
-        //        if (nearLow && cvdUp && flowUp && ltp <= vwap.Value * 1.002)
-        //        {
-        //            fired = true;
-        //            type = "ACCUMULATION_LONG";
-        //            reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, VWAP={vwap.Value:F2}";
-        //        }
-        //    }
-
-        //    if (!fired && s.RecentHigh > 0)
-        //    {
-        //        bool brokeHigh = ltp > s.RecentHigh * 1.0015;
-        //        bool cvdStrong = s.Cvd1m.Sum > Math.Max(100.0, s.Vol1m.Sum * 0.08);
-        //        bool asksPulled = s.PullEvents > s.StackEvents;
-
-        //        if (brokeHigh && cvdStrong && asksPulled)
-        //        {
-        //            fired = true;
-        //            type = "BREAKOUT_LONG";
-        //            reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, AskPull>{s.PullEvents} BidStack={s.StackEvents}";
-        //        }
-        //    }
-
-        //    // decay counters
-        //    s.PullEvents = (int)(s.PullEvents * 0.7);
-        //    s.StackEvents = (int)(s.StackEvents * 0.7);
-
-        //    // -------------------- Emit Signal --------------------
-        //    if (fired && OnSignal != null)
-        //    {
-        //        string stockName = _instrumentNameMap.TryGetValue(key, out var name) ? name : key;
-        //        OnSignal(stockName, t, ltp, s, reason, type);
-        //    }
-
-        //    return Tuple.Create(fired, reason);
-        //}
     }
+
+    //public class OrderFlowEngine
+    //{
+    //    private readonly ConcurrentDictionary<string, InstrumentState> _state =
+    //        new ConcurrentDictionary<string, InstrumentState>();
+
+    //    private readonly Dictionary<string, string> _instrumentNameMap;
+    //    private readonly Dictionary<string, double> _lastCvd = new Dictionary<string, double>();
+
+    //    private const double SpikeThreshold = 20000; // adjust for your liquidity
+
+    //    public OrderFlowEngine(Dictionary<string, string> instrumentNameMap)
+    //    {
+    //        _instrumentNameMap = instrumentNameMap;
+    //    }
+
+    //    public Action<string, DateTime, double, InstrumentState, string, string> OnSignal { get; set; }
+
+    //    public InstrumentState Get(string key)
+    //    {
+    //        return _state.GetOrAdd(key, k => new InstrumentState(k));
+    //    }
+
+    //    private static Side ClassifyAggressor(double price, OrderBookSnapshot book, double? prevMid)
+    //    {
+    //        if (book == null) return Side.Unknown;
+    //        if (price >= book.BestAsk) return Side.Buy;
+    //        if (price <= book.BestBid) return Side.Sell;
+
+    //        double mid = (book.BestBid + book.BestAsk) / 2.0;
+    //        double refMid = prevMid ?? mid;
+    //        return price >= refMid ? Side.Buy : Side.Sell;
+    //    }
+
+    //    public Tuple<bool, string> OnTick(string key, DateTime t, double ltp, int ltq,
+    //                              double bestBid, int bidQty, double bestAsk, int askQty)
+    //    {
+    //        var s = Get(key);
+
+    //        // keep prevMid BEFORE book update
+    //        double prevMid = (s.Book.BestBid + s.Book.BestAsk) / 2.0;
+
+    //        // -------------------- Update book --------------------
+    //        if (s.LastBidQty != 0 && s.LastAskQty != 0)
+    //        {
+    //            if (askQty < (int)(s.LastAskQty * 0.6)) s.PullEvents++;
+    //            if (bidQty > (int)(s.LastBidQty * 1.4)) s.StackEvents++;
+    //        }
+    //        s.Book.BestBid = bestBid; s.Book.BestBidQty = bidQty;
+    //        s.Book.BestAsk = bestAsk; s.Book.BestAskQty = askQty;
+    //        s.LastBidQty = bidQty; s.LastAskQty = askQty;
+
+    //        // -------------------- Trade detection --------------------
+    //        bool hasTrade =
+    //            (!s.LastTradeTime.HasValue || t > s.LastTradeTime.Value) &&
+    //            ltq > 0 &&
+    //            (!s.LastPrice.HasValue || ltp != s.LastPrice.Value || ltq != s.LastQty);
+
+    //        if (hasTrade)
+    //        {
+    //            var side = ClassifyAggressor(ltp, s.Book, prevMid);
+    //            int signedVol = side == Side.Buy ? ltq : (side == Side.Sell ? -ltq : 0);
+
+    //            s.Cvd += signedVol;
+    //            s.Cvd1m.Add(t, signedVol);
+
+    //            s.UpdateVWAP(t, ltp, ltq);
+    //            s.UpdatePriceMicro(t, ltp);
+
+    //            s.LastPrice = ltp;
+    //            s.LastQty = ltq;
+    //            s.LastTradeTime = t;
+    //        }
+    //        else
+    //        {
+    //            s.UpdatePriceMicro(t, ltp);
+    //            s.LastPrice = ltp;
+    //        }
+
+    //        // -------------------- CVD spike detection --------------------
+    //        bool fired = false;
+    //        string reason = "";
+    //        string type = "";
+
+            
+    //        double currentCvd = s.Cvd1m.Sum;
+    //        double lastCvd = _lastCvd.TryGetValue(key, out var c) ? c : 0;
+    //        double delta = currentCvd - lastCvd;
+
+    //        // Use 10% of last 1-minute volume as threshold
+    //        double avgVol = s.Vol1m.Sum; // total volume in last 1 min
+    //        double dynamicThreshold = Math.Max(50, avgVol * 0.1); // 10% of 1-min volume
+
+    //        if (Math.Abs(delta) >= dynamicThreshold)
+    //        {
+    //            fired = true;
+    //            type = "CVD_SPIKE";
+    //            reason = $"ΔCVD={delta:F0}, TotalCVD={currentCvd:F0}, Vol1m={s.Vol1m.Sum:F0}, Threshold={dynamicThreshold:F0}";
+    //        }
+
+    //        _lastCvd[key] = currentCvd;
+    //        // -------------------- Other rules (unchanged) --------------------
+    //        var vwap = s.VWAP;
+    //        if (!fired && vwap.HasValue && s.Vol1m.Sum > 0)
+    //        {
+    //            bool nearLow = s.RecentLow > 0 && ltp <= s.RecentLow * 1.002;
+    //            bool cvdUp = s.Cvd1m.Sum > Math.Max(50.0, s.Vol1m.Sum * 0.05);
+    //            bool flowUp = s.StackEvents > s.PullEvents;
+
+    //            if (nearLow && cvdUp && flowUp && ltp <= vwap.Value * 1.002)
+    //            {
+    //                fired = true;
+    //                type = "ACCUMULATION_LONG";
+    //                reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, VWAP={vwap.Value:F2}";
+    //            }
+    //        }
+
+    //        if (!fired && s.RecentHigh > 0)
+    //        {
+    //            bool brokeHigh = ltp > s.RecentHigh * 1.0015;
+    //            bool cvdStrong = s.Cvd1m.Sum > Math.Max(100.0, s.Vol1m.Sum * 0.08);
+    //            bool asksPulled = s.PullEvents > s.StackEvents;
+
+    //            if (brokeHigh && cvdStrong && asksPulled)
+    //            {
+    //                fired = true;
+    //                type = "BREAKOUT_LONG";
+    //                reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, AskPull={s.PullEvents} BidStack={s.StackEvents}";
+    //            }
+    //        }
+
+    //        // decay counters
+    //        s.PullEvents = (int)(s.PullEvents * 0.7);
+    //        s.StackEvents = (int)(s.StackEvents * 0.7);
+
+    //        // -------------------- Emit Signal --------------------
+    //        if (fired && OnSignal != null)
+    //        {
+    //            string stockName = _instrumentNameMap.TryGetValue(key, out var name) ? name : key;
+    //            OnSignal(stockName, t, ltp, s, reason, type);
+    //            //Console.WriteLine($"Signal added: {stockName} {type} {reason}");
+    //        }
+
+    //        return Tuple.Create(fired, reason);
+    //    }
+
+    //    #region old code on tick
+    //    //public Tuple<bool, string> OnTick(string key, DateTime t, double ltp, int ltq,
+    //    //                                  double bestBid, int bidQty, double bestAsk, int askQty)
+    //    //{
+    //    //    var s = Get(key);
+
+    //    //    // update book
+    //    //    if (s.LastBidQty != 0 && s.LastAskQty != 0)
+    //    //    {
+    //    //        if (askQty < (int)(s.LastAskQty * 0.6)) s.PullEvents++;
+    //    //        if (bidQty > (int)(s.LastBidQty * 1.4)) s.StackEvents++;
+    //    //    }
+    //    //    s.Book.BestBid = bestBid; s.Book.BestBidQty = bidQty;
+    //    //    s.Book.BestAsk = bestAsk; s.Book.BestAskQty = askQty;
+    //    //    s.LastBidQty = bidQty; s.LastAskQty = askQty;
+
+    //    //    // trade detection
+    //    //    bool hasTrade = !s.LastTradeTime.HasValue || t > s.LastTradeTime.Value ||
+    //    //                    !s.LastPrice.HasValue || ltp != s.LastPrice.Value ||
+    //    //                    !s.LastQty.HasValue || ltq != s.LastQty.Value;
+
+    //    //    if (hasTrade && ltq > 0)
+    //    //    {
+    //    //        double prevMid = (s.Book.BestBid + s.Book.BestAsk) / 2.0;
+    //    //        var side = ClassifyAggressor(ltp, s.Book, prevMid);
+
+    //    //        int signedVol = side == Side.Buy ? ltq : (side == Side.Sell ? -ltq : 0);
+    //    //        s.Cvd += signedVol;
+    //    //        s.Cvd1m.Add(t, signedVol);
+
+    //    //        s.UpdateVWAP(t, ltp, ltq);
+    //    //        s.UpdatePriceMicro(t, ltp);
+
+    //    //        s.LastPrice = ltp;
+    //    //        s.LastQty = ltq;
+    //    //        s.LastTradeTime = t;
+    //    //    }
+    //    //    else
+    //    //    {
+    //    //        s.UpdatePriceMicro(t, ltp);
+    //    //        s.LastPrice = ltp;
+    //    //    }
+
+    //    //    bool fired = false;
+    //    //    string reason = "";
+    //    //    string type = "";
+
+    //    //    // -------------------- Built-in CVD spike detection --------------------
+    //    //    double currentCvd = s.Cvd1m.Sum;
+    //    //    double lastCvd = _lastCvd.TryGetValue(key, out var c) ? c : 0;
+    //    //    double delta = currentCvd - lastCvd;
+
+    //    //    if (Math.Abs(delta) >= SpikeThreshold)
+    //    //    {
+    //    //        fired = true;
+    //    //        type = "CVD_SPIKE";
+    //    //        reason = $"ΔCVD={delta:F0}, TotalCVD={currentCvd:F0}, Vol1m={s.Vol1m.Sum:F0}";
+    //    //    }
+
+    //    //    _lastCvd[key] = currentCvd;
+
+    //    //    // -------------------- Other existing rules --------------------
+    //    //    var vwap = s.VWAP;
+    //    //    if (!fired && vwap.HasValue && s.Vol1m.Sum > 0)
+    //    //    {
+    //    //        bool nearLow = s.RecentLow > 0 && ltp <= s.RecentLow * 1.002;
+    //    //        bool cvdUp = s.Cvd1m.Sum > Math.Max(50.0, s.Vol1m.Sum * 0.05);
+    //    //        bool flowUp = s.StackEvents > s.PullEvents;
+
+    //    //        if (nearLow && cvdUp && flowUp && ltp <= vwap.Value * 1.002)
+    //    //        {
+    //    //            fired = true;
+    //    //            type = "ACCUMULATION_LONG";
+    //    //            reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, VWAP={vwap.Value:F2}";
+    //    //        }
+    //    //    }
+
+    //    //    if (!fired && s.RecentHigh > 0)
+    //    //    {
+    //    //        bool brokeHigh = ltp > s.RecentHigh * 1.0015;
+    //    //        bool cvdStrong = s.Cvd1m.Sum > Math.Max(100.0, s.Vol1m.Sum * 0.08);
+    //    //        bool asksPulled = s.PullEvents > s.StackEvents;
+
+    //    //        if (brokeHigh && cvdStrong && asksPulled)
+    //    //        {
+    //    //            fired = true;
+    //    //            type = "BREAKOUT_LONG";
+    //    //            reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, AskPull>{s.PullEvents} BidStack={s.StackEvents}";
+    //    //        }
+    //    //    }
+
+    //    //    // decay counters
+    //    //    s.PullEvents = (int)(s.PullEvents * 0.7);
+    //    //    s.StackEvents = (int)(s.StackEvents * 0.7);
+
+    //    //    // -------------------- Emit Signal --------------------
+    //    //    if (fired && OnSignal != null)
+    //    //    {
+    //    //        string stockName = _instrumentNameMap.TryGetValue(key, out var name) ? name : key;
+    //    //        OnSignal(stockName, t, ltp, s, reason, type);
+    //    //    }
+
+    //    //    return Tuple.Create(fired, reason);
+    //    //}
+    //    #endregion
+
+    //}
 
 
     //public class OrderFlowEngine

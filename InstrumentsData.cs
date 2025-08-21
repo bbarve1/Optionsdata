@@ -82,12 +82,37 @@ namespace CVD
             }
 
             string instrumentKey = "NSE_INDEX%7CNifty%2050";
+            var nifty50Symbols = new HashSet<string>
+                    {
+                       "AXISBANK",
+                        "KOTAKBANK",
+                        "BAJFINANCE",
+                        "SBIN",
+                        "HCLTECH",
+                        "TECHM",
+                        "BAJAJFINSV",
+                        "ADANIENT",
+                        "ADANIPORTS",
+                        "TATAMOTORS",
+                        "POWERGRID",
+                        "NTPC",
+                        "LTIM",
+                        "DRREDDY",
+                        "DIVISLAB",
+                        "GRASIM",
+                        "HEROMOTOCO",
+                        "COALINDIA",
+                        "HINDALCO",
+                        "ICICIGI"
+                                        };
+            //var nifty50Symbols = new HashSet<string>
+            //        {
+            //            "HAL", "NAUKRI", "HAL","BHARTIARTL"
+            //        };
+            var equityList = instruments
+                            .Where(x => nifty50Symbols.Contains(x.trading_symbol))
+                            .ToList();
 
-
-
-
-            //double niftySpot = GetSpotPriceAsync(instrumentKey);
-            //double bankNiftySpot = GetSpotPriceAsync(bankNiftyInstruments);
             double niftySpot = 24650;
             double bankNiftySpot = 55000;
 
@@ -97,9 +122,9 @@ namespace CVD
                 .Distinct()
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            var equityList = instruments
-                .Where(x => x.segment == "NSE_EQ" && x.instrument_type == "EQ" && fnoSymbols.Contains(x.name))
-                .ToList();
+            //var equityList = instruments
+            //    .Where(x => x.segment == "NSE_EQ" && x.instrument_type == "EQ" && fnoSymbols.Contains(x.name))
+            //    .ToList();
 
             // 4️⃣ FNO list — only for equities in our equityList
             var fnoList = instruments
