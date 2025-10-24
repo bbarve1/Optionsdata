@@ -1,18 +1,26 @@
-﻿using Newtonsoft.Json;
+﻿using MongoDB.Bson;
+using MongoDB.Driver;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using RestSharp;
 using System;
 using System.Collections.Generic;
+using System.Data;
+using System.Data.SqlClient;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Net.WebSockets;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Windows;
 using System.Xml.Linq;
+using static MongoDB.Bson.Serialization.Serializers.SerializerHelper;
 
 namespace CVD
 {
-    internal class InstrumentsData
+    public class InstrumentsData
     {
         private const string BodJsonUrl = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz";
         private static string baseUrl = "https://api.upstox.com";
@@ -23,9 +31,9 @@ namespace CVD
             _accessToken = accessToken;
 
         }
-        
 
-        
+
+
         public class Instrument
         {
             public string instrument_key { get; set; }
@@ -36,30 +44,7 @@ namespace CVD
             public string expiry { get; set; }
             public double strike_price { get; set; }
         }
-        private async Task<double> GetSpotPriceAsync(string instrumentToken)
-        {
-            var client = new RestClient(baseUrl);
-            var request = new RestRequest($"/api/v1/quote/{instrumentToken}", Method.Get);
-            request.AddHeader("Authorization", $"Bearer {_accessToken}");
 
-            var response = await client.ExecuteAsync(request);
-
-            if (!response.IsSuccessful)
-            {
-                Console.WriteLine($"Error fetching quote for token {instrumentToken}: {response.StatusCode} {response.Content}");
-                return 0;
-            }
-
-            var json = JObject.Parse(response.Content);
-            if (json["ltp"] != null)
-            {
-                return json["ltp"].Value<double>();
-            }
-
-            Console.WriteLine($"LTP not found in response for token {instrumentToken}");
-            return 0;
-        }
-        // Public method returning both lists
         public async Task<(List<Instrument> equityList, List<Instrument> fnoList, List<Instrument> niftyCE, List<Instrument> niftyPE, List<Instrument> bankniftyCE, List<Instrument> bankniftyPE, Dictionary<string, string> InstrumentNameMap)> GetInstrumentsAsync()
         {
 
@@ -83,28 +68,16 @@ namespace CVD
 
             string instrumentKey = "NSE_INDEX%7CNifty%2050";
             var nifty50Symbols = new HashSet<string>
-                    {
-                       "AXISBANK",
-                        "KOTAKBANK",
-                        "BAJFINANCE",
-                        "SBIN",
-                        "HCLTECH",
-                        "TECHM",
-                        "BAJAJFINSV",
-                        "ADANIENT",
-                        "ADANIPORTS",
-                        "TATAMOTORS",
-                        "POWERGRID",
-                        "NTPC",
-                        "LTIM",
-                        "DRREDDY",
-                        "DIVISLAB",
-                        "GRASIM",
-                        "HEROMOTOCO",
-                        "COALINDIA",
-                        "HINDALCO",
-                        "ICICIGI"
-                                        };
+{
+                "RELIANCE", "TCS", "HDFCBANK", "INFY", "HINDUNILVR", "ICICIBANK", "KOTAKBANK",
+                "SBIN", "BHARTIARTL", "ITC", "ASIANPAINT", "DMART", "BAJFINANCE", "HCLTECH",
+                "WIPRO", "SUNPHARMA", "MARUTI", "TITAN", "ULTRACEMCO", "NTPC", "ONGC",
+                "POWERGRID", "NESTLEIND", "M&M", "AXISBANK", "LT", "TECHM", "TATAMOTORS",
+                "ADANIPORTS", "BAJAJFINSV", "BRITANNIA", "GRASIM", "JSWSTEEL", "HDFCLIFE",
+                "CIPLA", "SHREECEM", "UPL", "SBILIFE", "DIVISLAB", "DRREDDY", "HEROMOTOCO",
+                "INDUSINDBK", "COALINDIA", "BAJAJ-AUTO", "EICHERMOT", "APOLLOHOSP", "TATASTEEL", "BPCL"
+            };
+
             //var nifty50Symbols = new HashSet<string>
             //        {
             //            "HAL", "NAUKRI", "HAL","BHARTIARTL"
@@ -113,11 +86,17 @@ namespace CVD
                             .Where(x => nifty50Symbols.Contains(x.trading_symbol))
                             .ToList();
 
-            double niftySpot = 24650;
+            double niftySpot = 25300;
             double bankNiftySpot = 55000;
 
+            var equityNames = equityList
+                .Select(x => x.name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
             var fnoSymbols = instruments
-                .Where(x => x.segment == "NSE_FO" && x.instrument_type == "FUT")
+                .Where(x => x.segment == "NSE_FO"
+                            && x.instrument_type == "FUT"
+                            && equityNames.Contains(x.name))
                 .Select(x => x.name)
                 .Distinct()
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -141,7 +120,7 @@ namespace CVD
                             .First();
 
 
-            // 4️⃣ ±8 strikes from spot (strike difference for NIFTY = 50)
+
             var ExpiryDate = expiry.Date;
 
             fnoList = fnoList
@@ -166,10 +145,10 @@ namespace CVD
 
             // 4️⃣ ±8 strikes from spot (strike difference for NIFTY = 50)
             var nearestExpiryDate = nearestExpiry.Date;
-
+            
             var niftyOptions = niftyOptionsAll
                             .Where(x => ParseExpiry(x.expiry).Date == nearestExpiry.Date
-                                        && Math.Abs(x.strike_price - niftySpot) <= (8 * 50))
+                                        && Math.Abs(x.strike_price - niftySpot) <= (1 * 50))
                             .OrderBy(x => x.strike_price)
                             .ToList();
 
@@ -209,12 +188,13 @@ namespace CVD
                 _instrumentNameMap[inst.instrument_key] = inst.trading_symbol; // or inst.name
             }
 
-            
+
 
             await Task.CompletedTask; // To satisfy async method signature  
             return (equityList, fnoList, niftyCE, niftyPE, bankniftyCE, bankniftyPE, instrumentNameMap);
 
         }
+
         private DateTime ParseExpiry(string expiry)
         {
             // Convert milliseconds since epoch to DateTime (UTC)
@@ -226,6 +206,10 @@ namespace CVD
 
             throw new FormatException($"Invalid expiry value: {expiry}");
         }
+        
+
     }
 
-}
+   
+       
+    }

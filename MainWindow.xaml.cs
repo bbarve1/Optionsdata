@@ -1,391 +1,901 @@
-﻿using Com.Upstox.Marketdatafeederv3udapi.Rpc.Proto;
+﻿using Com.Upstox.Marketdatafeederv3udapi.Rpc.Proto; // optional - remove if not available
+using Google.Protobuf;
+using LiveCharts.Wpf;
 using MongoDB.Bson;
 using MongoDB.Driver;
+using Npgsql;
 using RestSharp;
+using SharpCompress.Common;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.ComponentModel;
-using System.Globalization;
+using System.Data.SqlClient;
 using System.IO;
 using System.Linq;
 using System.Net.WebSockets;
-using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Data;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Shapes;
 using System.Windows.Threading;
-using Type = Com.Upstox.Marketdatafeederv3udapi.Rpc.Proto.Type;
-// ===== Replace with your actual Upstox proto namespaces/types =====
-//using FeedResponse = Your.Upstox.Proto.FeedResponse;  // <-- CHANGE
-//using Type = Your.Upstox.Proto.Type;                  // <-- CHANGE
-// ================================================================
 
 namespace CVD
 {
-    public partial class MainWindow : Window, INotifyPropertyChanged
+    public partial class MainWindow : Window
     {
-        private readonly ConcurrentQueue<SignalRow> _pendingSignals = new ConcurrentQueue<SignalRow>();
-
-        public ObservableCollection<SignalRow> Signals { get; private set; }
-        public ICollectionView SignalsView { get; private set; }
+        private DrawCharts chartHelper;
+        private HighFrequencyTickProcessor _tickProcessor;
+        // ------------- CONFIG -------------
+        private readonly string _connectionString = "Host=localhost;Port=5432;Username=postgres;Password=Tripleb@003;Database=marketdata" + ";Maximum Pool Size=100;Connection Idle Lifetime=30;Connection Pruning Interval=10";
+        private readonly string _sqlconnectionString = "Data Source=LAPTOP-3KVKG1RR\\SQLEXPRESS;Initial Catalog=DBSED3204;Integrated Security=True";
+        // ------------- END CONFIG ---------
+        private Dictionary<string, List<RawTick>> _tickBuffer = new Dictionary<string, List<RawTick>>();
+        private Dictionary<string, DateTime> _lastMinuteBar = new Dictionary<string, DateTime>();
+        private Dictionary<string, string> _instrumentNameMap = new Dictionary<string, string>();
+        private ObservableCollection<EnhancedTradeCandidate> _candidates = new ObservableCollection<EnhancedTradeCandidate>();
+        private ObservableCollection<MinuteRow> _details = new ObservableCollection<MinuteRow>();
+        private DispatcherTimer _watchdogTimer;
+        private DateTime _lastMessageTime = DateTime.Now;
+        private TradeSignalCalculator _calculator = new TradeSignalCalculator();
+        private List<string> instruments = new List<string>();
         private ClientWebSocket webSocket;
-
-        private readonly Dictionary<string, string> _instrumentNameMap;
-        private readonly OrderFlowEngine _engine;
-        private readonly List<string> instruments = new List<string>();
-
-        private HashSet<string> equitySet = new HashSet<string>();
-        private HashSet<string> fnoSet = new HashSet<string>();
-
         private CancellationTokenSource _cts;
-        public string accessToken;
-        public event PropertyChangedEventHandler PropertyChanged;
-
-       
-        private void OnPropertyChanged([CallerMemberName] string name = null)
-        {
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
-        }
-        //private void OnPropertyChanged([CallerMemberName] string name = null)
-        //{
-        //    var handler = PropertyChanged;
-        //    if (handler != null) handler(this, new PropertyChangedEventArgs(name));
-        //}
+        private List<DailyStockRow> dailyStockRow = new List<DailyStockRow>();
+        private List<DailyFutureRow> dailyFutureRow = new List<DailyFutureRow>();
+        private string accessToken;
+        private MinuteBarProcessor _minuteBarProcessor;
+        private readonly ConcurrentDictionary<string, double> _lastCvdCache = new ConcurrentDictionary<string, double>();
 
         public MainWindow()
         {
             InitializeComponent();
+            // Initialize collections first
+            _tickBuffer = new Dictionary<string, List<RawTick>>();
+            _lastMinuteBar = new Dictionary<string, DateTime>();
 
-            //_instrumentNameMap = new Dictionary<string, string>();
-            //Getsymbollist();
-            //Signals = new ObservableCollection<SignalRow>();
-            //SignalsView = CollectionViewSource.GetDefaultView(Signals);
+            // Initialize processors
+            InitializeProcessors();
 
-            //this.DataContext = this;  // <- binds DataGrid to this window's properties
+            // Initialize watchdog timer
+            _watchdogTimer = new DispatcherTimer();
+            _watchdogTimer.Interval = TimeSpan.FromMinutes(2); // Check every 2 minutes
+            _watchdogTimer.Tick += WatchdogTimer_Tick;
+            _watchdogTimer.Start();
 
+            // UI setup
+            SummaryGrid.ItemsSource = _candidates;
+            DetailGrid.ItemsSource = _details;
+            TimeframeCombo.SelectedIndex = 0;
 
+            // seed data and UI defaults
+            SeedSampleData();
+            DbStatus.Text = "Not connected";
+            ConnectionStatus.Text = "Disconnected";
+            StatusText.Text = "Idle";
+            Timetext.Text = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            InitializeCvdCache();
 
-            //_engine = new OrderFlowEngine(_instrumentNameMap);
-            
-            //_engine.OnSignal = (symbolName, t, price, s, reason, sigType) =>
-            //{
-            //    if (s == null) return;
+            chartHelper = new DrawCharts(SymbolCombo, TimeframeCombo, DatePickerBox, PriceChart, CvdChart);
+            chartHelper.LoadSymbols();
+        }
+        private async void LoadChart_Click(object sender, RoutedEventArgs e)
+        {
+            await chartHelper.LoadChartAsync();
+        }
 
-            //    bool important = sigType.Contains("ICEBERG") || Math.Abs(s.Cvd1m.Sum) >= 100;
-            //    if (!important) return;
-
-            //    _pendingSignals.Enqueue(new SignalRow
-            //    {
-            //        Time = t,
-            //        Symbol = symbolName,
-            //        Ltp = price,
-            //        VWAP = s.VWAP ?? double.NaN,
-            //        Cvd1m = (long)Math.Round(s.Cvd1m?.Sum ?? 0),
-            //        Vol1m = (long)Math.Round(s.Vol1m?.Sum ?? 0),
-            //        RecentHigh = s.RecentHigh,
-            //        RecentLow = s.RecentLow,
-            //        SignalType = sigType,
-            //        Reason = reason
-            //    });
-            //};
-            //StartSignalUpdater();
-
-            _instrumentNameMap = new Dictionary<string, string>();
-            Getsymbollist();
-            Signals = new ObservableCollection<SignalRow>();
-            SignalsView = CollectionViewSource.GetDefaultView(Signals);
-            this.DataContext = this;
-
-            _engine = new OrderFlowEngine(_instrumentNameMap);
-
-            _engine.OnSignal = (symbolName, t, price, s, reason, sigType) =>
+        private async void WatchdogTimer_Tick(object sender, EventArgs e)
+        {
+            // If no messages received in 5 minutes but WebSocket appears connected, force reconnect
+            if (webSocket?.State == WebSocketState.Open && (DateTime.Now - _lastMessageTime).TotalMinutes >= 5)
             {
-                if (s == null) return;
-
-                bool important = sigType.Contains("ICEBERG") || Math.Abs(s.Cvd1m.Sum) >= 100;
-                if (!important) return;
-
-                _pendingSignals.Enqueue(new SignalRow
+                await Dispatcher.InvokeAsync(() =>
                 {
-                    Time = t,
-                    Symbol = symbolName,
-                    Ltp = price,
-                    VWAP = s.VWAP ?? double.NaN,
-                    Cvd1m = (long)Math.Round(s.Cvd1m?.Sum ?? 0),
-                    Vol1m = (long)Math.Round(s.Vol1m?.Sum ?? 0),
-                    RecentHigh = s.RecentHigh,
-                    RecentLow = s.RecentLow,
-                    SignalType = sigType,
-                    Reason = reason
+                    OutputTextBox.AppendText("🕵️ WATCHDOG: No messages in 5 minutes. Force reconnecting...\n");
                 });
-            };
 
-            StartSignalUpdater();
+                await ReconnectWebSocket();
+            }
 
+            _lastMessageTime = DateTime.Now; // Update timer
         }
-
-        private void SetupSignalsView()
+        #region minutebar processor
+        private void InitializeProcessors()
         {
-            SignalsView.Filter = obj =>
+            // Initialize tick processor
+            _tickProcessor = new HighFrequencyTickProcessor(
+                connectionString: _connectionString,
+                useBulkInsert: true,
+                batchSize: 500,
+                maxQueueSize: 10000);
+
+            // Initialize minute bar processor
+            _minuteBarProcessor = new MinuteBarProcessor(_connectionString);
+
+            // Subscribe to events
+            _tickProcessor.OnLogMessage += OnTickProcessorLog;
+            _minuteBarProcessor.OnLogMessage += OnMinuteBarProcessorLog;
+
+            // Start status update timer (only once)
+            _statusUpdateTimer = new DispatcherTimer();
+            _statusUpdateTimer.Interval = TimeSpan.FromMilliseconds(500);
+            _statusUpdateTimer.Tick += UpdateStatusPanel;
+            _statusUpdateTimer.Start();
+        }
+        private void OnMinuteBarProcessorLog(string message)
+        {
+            Dispatcher.Invoke(() =>
             {
-                if (obj is SignalRow row)
+                // Add to insertion log with [MINUTE] prefix
+                var currentText = InsertionLog.Text;
+                if (currentText.Length > 1000)
                 {
-                    // ⚡ Only show ICEBERG or strong CVD signals
-                    return row.SignalType.Contains("ICEBERG") || Math.Abs(row.Cvd1m) >= 100;
+                    currentText = string.Join(Environment.NewLine,
+                        currentText.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries)
+                                  .Reverse()
+                                  .Take(20)
+                                  .Reverse());
                 }
-                return false;
-            };
 
-            SignalsView.SortDescriptions.Clear();
-            SignalsView.SortDescriptions.Add(new SortDescription(nameof(SignalRow.Cvd1m), ListSortDirection.Descending));
+                InsertionLog.Text = currentText + Environment.NewLine + message;
+
+                var scrollViewer = GetChildOfType<ScrollViewer>(InsertionLog);
+                scrollViewer?.ScrollToBottom();
+            });
         }
-        private void StartSignalUpdater()
+
+        // Update your existing methods
+        private async Task AddTickAndAggregate(RawTick tick)
         {
-            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-            timer.Tick += (s, e) =>
+            if (!_tickBuffer.ContainsKey(tick.InstrumentKey))
+                _tickBuffer[tick.InstrumentKey] = new List<RawTick>();
+            _tickBuffer[tick.InstrumentKey].Add(tick);
+
+            var currentMinute = new DateTime(tick.Ts.Year, tick.Ts.Month, tick.Ts.Day, tick.Ts.Hour, tick.Ts.Minute, 0);
+            if (!_lastMinuteBar.ContainsKey(tick.InstrumentKey))
+                _lastMinuteBar[tick.InstrumentKey] = currentMinute;
+
+            // Check if buffer crossed into next minute
+            if (currentMinute > _lastMinuteBar[tick.InstrumentKey])
             {
-                while (_pendingSignals.TryDequeue(out var row))
+                var ticks = _tickBuffer[tick.InstrumentKey];
+                var bar = AggregateToMinute(ticks);
+                if (bar != null)
                 {
-                    Signals.Insert(0, row); // insert at top
+                    await _minuteBarProcessor.StoreMinuteBarAsync(bar, tick.InstrumentKey);
+                    // RecalculateCandidate(tick.InstrumentKey);
                 }
-            };
-            timer.Start();
+
+                _tickBuffer[tick.InstrumentKey].Clear();
+                _lastMinuteBar[tick.InstrumentKey] = currentMinute;
+            }
         }
-        private bool SignalFilter(object obj)
+
+        private MinuteRow AggregateToMinute(List<RawTick> ticks)
         {
-            var row = obj as SignalRow;
-            if (row == null) return false;
+            if (ticks == null || ticks.Count == 0) return null;
 
-            var q = (SearchBox.Text ?? "").Trim().ToUpperInvariant();
-            if (q.Length > 0 && row.Symbol != null && row.Symbol.ToUpperInvariant().IndexOf(q, StringComparison.Ordinal) < 0)
-                return false;
+            var ordered = ticks.OrderBy(t => t.Ts).ToList();
+            string instrumentKey = ordered.First().InstrumentKey;
+            double open = ordered.First().Price;
+            double close = ordered.Last().Price;
+            double high = ordered.Max(t => t.Price);
+            double low = ordered.Min(t => t.Price);
+            long volume = ordered.Sum(t => t.Size);
+            long delta = (long)ordered.Sum(t => t.Cvd ?? 0);
 
-            if (OnlyFNOCheck.IsChecked == true && fnoSet.Count > 0)
-                return fnoSet.Contains(row.Symbol);
+            // Get last CVD from minute bar processor cache
+            double lastCvd = _minuteBarProcessor.GetLastCVD(instrumentKey);
+            double rolling = lastCvd + delta;
 
-            return true;
+            var minuteRow = new MinuteRow
+            {
+                Time = new DateTime(ordered.First().Ts.Year, ordered.First().Ts.Month, ordered.First().Ts.Day, ordered.First().Ts.Hour, ordered.First().Ts.Minute, 0),
+                Open = open,
+                High = high,
+                Low = low,
+                Close = close,
+                Volume = volume,
+                Delta = delta,
+                RollingCvd = rolling,
+                OI = ordered.Last().OI ?? 0
+            };
+
+            // Update cache in minute bar processor
+            _minuteBarProcessor.UpdateCvd(instrumentKey, rolling);
+
+            return minuteRow;
         }
 
-        // -------- Toolbar handlers --------
-        private async void Start_Click(object sender, RoutedEventArgs e) 
+        // Update disposal
+        //protected override void OnClosed(EventArgs e)
+        //{
+        //    _statusUpdateTimer?.Stop();
+        //    _tickProcessor?.Dispose();
+        //    _minuteBarProcessor?.Dispose();
+        //    base.OnClosed(e);
+        //} 
+        #endregion
+
+        #region get count of rows
+        // Add these fields to MainWindow class
+        private DispatcherTimer _statusUpdateTimer;
+
+        // Initialize in constructor or loaded event
+
+
+        private void OnTickProcessorLog(string message)
+        {
+            // Update UI thread safely
+            Dispatcher.Invoke(() =>
+            {
+                // Add to insertion log
+                var currentText = InsertionLog.Text;
+                if (currentText.Length > 1000) // Keep last ~20 lines
+                {
+                    currentText = string.Join(Environment.NewLine,
+                        currentText.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries)
+                                  .Reverse()
+                                  .Take(20)
+                                  .Reverse());
+                }
+
+                InsertionLog.Text = currentText + Environment.NewLine + message;
+
+                // Auto-scroll to bottom
+                var scrollViewer = GetChildOfType<ScrollViewer>(InsertionLog);
+                scrollViewer?.ScrollToBottom();
+            });
+        }
+
+        private void UpdateStatusPanel(object sender, EventArgs e)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                // Update tick processor stats
+                if (_tickProcessor != null)
+                {
+                    var tickStats = _tickProcessor.GetPerformanceStats();
+
+                    TickCount.Text = tickStats.totalTicks.ToString("N0");
+                    FailedCount.Text = tickStats.failedTicks.ToString("N0");
+                    QueueSize.Text = tickStats.queueSize.ToString("N0");
+
+                    // Calculate success count
+                    var success = tickStats.totalTicks - tickStats.failedTicks;
+                    SuccessCount.Text = success.ToString("N0");
+
+                    // Update status text based on queue activity
+                    if (tickStats.queueSize > 0)
+                    {
+                        InsertionStatus.Text = "Processing Ticks...";
+                        InsertionStatus.Foreground = Brushes.LightGreen;
+                    }
+                }
+
+                // Update minute bar processor stats
+                if (_minuteBarProcessor != null)
+                {
+                    var minuteStats = _minuteBarProcessor.GetPerformanceStats();
+                    BatchCount.Text = minuteStats.totalBatches.ToString("N0"); // Show minute bar batches
+
+                    // Update status if minute bars are processing
+                    if (minuteStats.queueSize > 0)
+                    {
+                        InsertionStatus.Text = "Processing Minute Bars...";
+                        InsertionStatus.Foreground = Brushes.Cyan;
+                    }
+                }
+
+                // If both are idle
+                if ((_tickProcessor?.GetPerformanceStats().queueSize ?? 0) == 0 &&
+                    (_minuteBarProcessor?.GetPerformanceStats().queueSize ?? 0) == 0)
+                {
+                    InsertionStatus.Text = "Idle";
+                    InsertionStatus.Foreground = Brushes.Yellow;
+                }
+
+                // Update main status
+                var totalTicks = _tickProcessor?.GetPerformanceStats().totalTicks ?? 0;
+                var totalBatches = _minuteBarProcessor?.GetPerformanceStats().totalBatches ?? 0;
+                StatusText.Text = $"Ticks: {totalTicks:N0} | Minute Bars: {totalBatches:N0}";
+            });
+        }
+
+        // Helper method to find ScrollViewer
+        private static T GetChildOfType<T>(DependencyObject depObj) where T : DependencyObject
+        {
+            if (depObj == null) return null;
+
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(depObj); i++)
+            {
+                var child = VisualTreeHelper.GetChild(depObj, i);
+                var result = (child as T) ?? GetChildOfType<T>(child);
+                if (result != null) return result;
+            }
+            return null;
+        }
+
+        // Don't forget to dispose
+        protected override void OnClosed(EventArgs e)
+        {
+            _statusUpdateTimer?.Stop();
+            _tickProcessor?.Dispose();
+            _minuteBarProcessor?.Dispose();
+            base.OnClosed(e); // Only call this once
+        }
+        #endregion
+        //private void InitializeTickProcessor()
+        //{
+        //    _tickProcessor = new HighFrequencyTickProcessor(
+        //    connectionString: _connectionString,
+        //    useBulkInsert: true,
+        //    batchSize: 500,
+        //    maxQueueSize: 10000);
+
+        //    _tickProcessor = new HighFrequencyTickProcessor(_connectionString);
+        //    _tickProcessor.OnLogMessage += OnTickProcessorLog;
+
+        //    // Start status update timer
+        //    _statusUpdateTimer = new DispatcherTimer();
+        //    _statusUpdateTimer.Interval = TimeSpan.FromMilliseconds(500);
+        //    _statusUpdateTimer.Tick += UpdateStatusPanel;
+        //    _statusUpdateTimer.Start();
+
+        //    _minuteBarProcessor = new MinuteBarProcessor(_connectionString);
+        //    _tickBuffer = new Dictionary<string, List<RawTick>>();
+        //    _lastMinuteBar = new Dictionary<string, DateTime>();
+
+        //    // Subscribe to events
+        //    _tickProcessor.OnLogMessage += OnTickProcessorLog;
+        //    _minuteBarProcessor.OnLogMessage += OnMinuteBarProcessorLog;
+
+
+
+        //}
+        public void ClearCvdCache()
+        {
+            _lastCvdCache.Clear();
+        }
+
+        private double GetLastCVD(string key)
+        {
+            return _lastCvdCache.TryGetValue(key, out double lastCvd) ? lastCvd : 0;
+        }
+
+        private void UpdateCvd(string key, double rollingCvd)
+        {
+            _lastCvdCache.AddOrUpdate(key, rollingCvd, (k, oldValue) => rollingCvd);
+        }
+
+
+        public async Task InitializeCvdCache()
+        {
+            try
+            {
+                var conn = new NpgsqlConnection(_connectionString);
+                await conn.OpenAsync();
+                var cmd = new NpgsqlCommand("SELECT instrument_key, rolling_cvd FROM minute_bars WHERE ts >= NOW() - INTERVAL '1 day'", conn);
+
+                var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    string key = reader.GetString(0);
+                    double cvd = reader.GetDouble(1);
+                    _lastCvdCache.AddOrUpdate(key, cvd, (k, oldValue) => cvd);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log error but don't crash
+                Console.WriteLine($"Error initializing CVD cache: {ex.Message}");
+            }
+        }
+
+        private async Task EnsureTableExists()
+        {
+            Console.WriteLine("Starting EnsureTableExists...");
+
+            // Simple version without TimeScaleDB features
+            const string sql = @"
+        -- Create raw_ticks table
+        CREATE TABLE IF NOT EXISTS raw_ticks (
+            ts TIMESTAMPTZ NOT NULL,
+            instrument_key TEXT NOT NULL,
+            instrument_name TEXT,
+            price DOUBLE PRECISION NOT NULL,
+            size BIGINT NOT NULL,
+            bid_price DOUBLE PRECISION,
+            bid_qty BIGINT,
+            ask_price DOUBLE PRECISION,
+            ask_qty BIGINT,
+            oi DOUBLE PRECISION,
+            cvd DOUBLE PRECISION,
+            order_imbalance DOUBLE PRECISION,
+            instrument_type TEXT NOT NULL DEFAULT 'STOCK',
+            source TEXT NOT NULL DEFAULT 'websocket'
+        );
+
+        -- Create minute_bars table
+        CREATE TABLE IF NOT EXISTS minute_bars (
+            ts TIMESTAMPTZ NOT NULL,
+            instrument_key TEXT NOT NULL,
+            open DOUBLE PRECISION NOT NULL,
+            high DOUBLE PRECISION NOT NULL,
+            low DOUBLE PRECISION NOT NULL,
+            close DOUBLE PRECISION NOT NULL,
+            volume BIGINT NOT NULL,
+            delta DOUBLE PRECISION,
+            rolling_cvd DOUBLE PRECISION,
+            oi DOUBLE PRECISION
+        );
+
+        -- Create stock_data table
+        CREATE TABLE IF NOT EXISTS stock_data (
+            timestamp TIMESTAMPTZ NOT NULL,
+            instrument_key TEXT NOT NULL,
+            instrument_name TEXT NOT NULL,
+            price DOUBLE PRECISION NOT NULL,
+            volume BIGINT NOT NULL,
+            oi DOUBLE PRECISION,
+            cvd DOUBLE PRECISION,
+            instrument_type TEXT
+        );
+
+        -- Create basic indexes
+        CREATE INDEX IF NOT EXISTS idx_raw_ticks_ts ON raw_ticks (ts);
+        CREATE INDEX IF NOT EXISTS idx_raw_ticks_instrument ON raw_ticks (instrument_key);
+        CREATE INDEX IF NOT EXISTS idx_minute_bars_ts ON minute_bars (ts);
+        CREATE INDEX IF NOT EXISTS idx_minute_bars_instrument ON minute_bars (instrument_key);
+        CREATE INDEX IF NOT EXISTS idx_stock_data_ts ON stock_data (timestamp);
+        CREATE INDEX IF NOT EXISTS idx_stock_data_instrument ON stock_data (instrument_key);
+    ";
+
+            try
+            {
+                Console.WriteLine("Opening database connection...");
+                var connection = new NpgsqlConnection(_connectionString);
+                await connection.OpenAsync();
+                Console.WriteLine("Database connection opened successfully.");
+
+                var cmd = new NpgsqlCommand(sql, connection);
+                cmd.CommandTimeout = 300; // 5 minutes timeout
+
+                Console.WriteLine("Executing SQL commands...");
+                await cmd.ExecuteNonQueryAsync();
+                Console.WriteLine("All tables created successfully!");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error: {ex.Message}");
+                throw;
+            }
+        }
+        #region --- Sample / DB load ------------------------------------------------
+        private void SeedSampleData()
+        {
+            _candidates.Clear();
+            _candidates.Add(new EnhancedTradeCandidate { StockName = "INFY", SpotPrice = 0.82, FuturePrice = 0.75, VolumeStatus = "2.1x", StockCVD = 145000, RollingDelta = 18000, CVDStatus = "Rising", OpenHighLow = "Normal", VWAPStatus = "Above", TotalScore = 9, SignalStrength = "Strong" });
+            _candidates.Add(new EnhancedTradeCandidate { StockName = "HDFCBANK", SpotPrice = -0.42, FuturePrice = -0.5, VolumeStatus = "1.8x", StockCVD = -95000, RollingDelta = -16000, CVDStatus = "Falling", OpenHighLow = "Open=High", VWAPStatus = "Below", TotalScore = 8, SignalStrength = "Strong" });
+            _candidates.Add(new EnhancedTradeCandidate { StockName = "TCS", SpotPrice = 0.12, FuturePrice = 0.1, VolumeStatus = "1.0x", StockCVD = 12000, RollingDelta = 1000, CVDStatus = "Flat", OpenHighLow = "Open=Low", VWAPStatus = "Below", TotalScore = 3, SignalStrength = "Weak" });
+
+            RefreshSort();
+        }
+
+        private void RefreshSort()
+        {
+            var sorted = _candidates.OrderByDescending(c => c.TotalScore).ToList();
+            _candidates.Clear();
+            foreach (var s in sorted) _candidates.Add(s);
+        }
+
+        private async void RefreshButton_Click(object sender, RoutedEventArgs e)
+        {
+            await LoadCandidatesFromDb();
+        }
+
+        private async Task LoadCandidatesFromDb()
+        {
+            try
+            {
+                var conn = new NpgsqlConnection(_connectionString);
+                await conn.OpenAsync();
+                DbStatus.Text = "Connected";
+                DbStatus.Foreground = Brushes.LightGreen;
+
+                // TODO: replace with query to get instrument list or use your instrument lists
+                var symbols = new List<string> { "INFY", "HDFCBANK", "TCS" };
+
+                var newList = new List<EnhancedTradeCandidate>();
+                foreach (var sym in symbols)
+                {
+                    var lastBars = await LoadLastNMinutes(sym, 30);
+                    if (lastBars == null || lastBars.Count == 0) continue;
+                    var dailyStock = await LoadDailyStock(sym, 400);
+                    var dailyFuture = await LoadDailyFuture(sym, 400);
+                    var candidate = BuildCandidate(sym, lastBars, dailyStock, dailyFuture);
+                    newList.Add(candidate);
+
+                }
+                SymbolCombo.ItemsSource = newList.ToList();
+                _candidates.Clear();
+                foreach (var c in newList.OrderByDescending(x => x.TotalScore)) _candidates.Add(c);
+
+                SymbolCombo.ItemsSource = _candidates.Select(x => x.StockName).ToList();
+                if (SymbolCombo.Items.Count > 0) SymbolCombo.SelectedIndex = 0;
+            }
+            catch (Exception ex)
+            {
+                DbStatus.Text = "DB Error";
+                DbStatus.Foreground = Brushes.Orange;
+                MessageBox.Show("DB load error: " + ex.Message);
+            }
+        }
+
+        private async void LoadCandidatesFromDb_Click(object sender, RoutedEventArgs e)
+        {
+            await LoadCandidatesFromDb();
+        }
+
+        private void ApplyFilter_Click(object sender, RoutedEventArgs e)
+        {
+            string filter = FilterTextBox.Text?.Trim();
+            if (string.IsNullOrEmpty(filter))
+            {
+                SummaryGrid.ItemsSource = _candidates;
+                return;
+            }
+            //var filtered = _candidates.Where(c => c.StockName.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+            //SummaryGrid.ItemsSource = filtered;
+        }
+
+        private async void SummaryGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (SummaryGrid.SelectedItem is EnhancedTradeCandidate cand)
+            {
+                var list = await LoadLastNMinutes(cand.StockName, 30);
+                _details.Clear();
+                foreach (var m in list) _details.Add(m);
+            }
+        }
+        #endregion
+
+        #region --- DB Reads / Writes ------------------------------------------------
+        private async Task<List<MinuteRow>> LoadLastNMinutes(string instrumentKey, int n)
+        {
+            var res = new List<MinuteRow>();
+            var sql = @"SELECT ts, open, high, low, close, volume, delta, rolling_cvd, oi
+                FROM minute_bars
+                WHERE instrument_key = @key
+                ORDER BY ts DESC
+                LIMIT @n;";
+
+            var conn = new NpgsqlConnection(_connectionString);
+            await conn.OpenAsync();
+
+            var cmd = new NpgsqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("key", instrumentKey);
+            cmd.Parameters.AddWithValue("n", n);
+
+            var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                var m = new MinuteRow
+                {
+                    Time = rdr.GetDateTime(0),
+                    Open = rdr.IsDBNull(1) ? 0 : rdr.GetDouble(1),
+                    High = rdr.IsDBNull(2) ? 0 : rdr.GetDouble(2),
+                    Low = rdr.IsDBNull(3) ? 0 : rdr.GetDouble(3),
+                    Close = rdr.IsDBNull(4) ? 0 : rdr.GetDouble(4),
+                    Volume = rdr.IsDBNull(5) ? 0 : rdr.GetInt64(5),
+                    Delta = rdr.IsDBNull(6) ? 0 : rdr.GetDouble(6),  // Changed from GetInt64 to GetDouble
+                    RollingCvd = rdr.IsDBNull(7) ? 0 : rdr.GetDouble(7),
+                    OI = rdr.IsDBNull(8) ? 0 : rdr.GetDouble(8),
+                };
+                res.Add(m);
+            }
+
+            res.Reverse();
+            return res;
+        }
+        private async Task<List<DailyStockRow>> LoadDailyStock(string instrumentKey, int days)
+        {
+            var list = new List<DailyStockRow>();
+            var sql = @"SELECT day_date, open, high, low, close, volume, delivery FROM daily_stock WHERE instrument_key = @k ORDER BY day_date DESC LIMIT @d;";
+            var conn = new NpgsqlConnection(_connectionString);
+            await conn.OpenAsync();
+            var cmd = new NpgsqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("k", instrumentKey);
+            cmd.Parameters.AddWithValue("d", days);
+            var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                list.Add(new DailyStockRow { DayDate = rdr.GetDateTime(0).Date, Open = rdr.GetDouble(1), High = rdr.GetDouble(2), Low = rdr.GetDouble(3), Close = rdr.GetDouble(4), Volume = rdr.GetInt64(5), Delivery = rdr.IsDBNull(6) ? 0 : rdr.GetDouble(6) });
+            }
+            return list;
+        }
+
+        private async Task<List<DailyFutureRow>> LoadDailyFuture(string instrumentKey, int days)
+        {
+            var list = new List<DailyFutureRow>();
+            var sql = @"SELECT day_date, open, high, low, close, volume, oi FROM daily_future WHERE instrument_key=@k ORDER BY day_date DESC LIMIT @d;";
+            var conn = new NpgsqlConnection(_connectionString);
+            await conn.OpenAsync();
+            var cmd = new NpgsqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("k", instrumentKey);
+            cmd.Parameters.AddWithValue("d", days);
+            var rdr = await cmd.ExecuteReaderAsync();
+            while (await rdr.ReadAsync())
+            {
+                list.Add(new DailyFutureRow { DayDate = rdr.GetDateTime(0).Date, FutOpen = rdr.GetDouble(1), FutHigh = rdr.GetDouble(2), FutLow = rdr.GetDouble(3), FutClose = rdr.GetDouble(4), FutVolume = rdr.GetInt64(5), OpenInterest = rdr.IsDBNull(6) ? 0 : rdr.GetInt64(6) });
+            }
+            return list;
+        }
+
+        private async Task StoreRawTickAsync(RawTick tick)
+        {
+            const string sql = @"INSERT INTO raw_ticks (ts, instrument_key, instrument_name, price, size, bid_price, bid_qty, ask_price, ask_qty, oi, cvd, order_imbalance, instrument_type, source)
+VALUES (@ts, @instrumentKey, @instrumentName, @price, @size, @bidPrice, @bidQty, @askPrice, @askQty, @oi, @cvd, @orderImbalance, @instrumentType, @source);";
+
+            using (var conn = new NpgsqlConnection(_connectionString))
+            {
+                await conn.OpenAsync();
+
+                using (var cmd = new NpgsqlCommand(sql, conn))
+                {
+                    cmd.Parameters.AddWithValue("ts", tick.Ts);
+                    cmd.Parameters.AddWithValue("instrumentKey", tick.InstrumentKey);
+                    cmd.Parameters.AddWithValue("instrumentName", tick.InstrumentName ?? (object)DBNull.Value);
+                    cmd.Parameters.AddWithValue("price", tick.Price);
+                    cmd.Parameters.AddWithValue("size", tick.Size);
+                    cmd.Parameters.AddWithValue("bidPrice", tick.BidPrice ?? (object)DBNull.Value);
+                    cmd.Parameters.AddWithValue("bidQty", tick.BidQty ?? (object)DBNull.Value);
+                    cmd.Parameters.AddWithValue("askPrice", tick.AskPrice ?? (object)DBNull.Value);
+                    cmd.Parameters.AddWithValue("askQty", tick.AskQty ?? (object)DBNull.Value);
+                    cmd.Parameters.AddWithValue("oi", tick.OI ?? (object)DBNull.Value);
+                    cmd.Parameters.AddWithValue("cvd", tick.Cvd ?? (object)DBNull.Value);
+                    cmd.Parameters.AddWithValue("orderImbalance", tick.OrderImbalance ?? (object)DBNull.Value);
+                    cmd.Parameters.AddWithValue("instrumentType", "STOCK");
+                    cmd.Parameters.AddWithValue("source", "websocket");
+
+                    await cmd.ExecuteNonQueryAsync();
+                }
+            }
+        }
+        private async Task InsertMinuteBarAsync(MinuteRow bar, string instrumentKey)
+        {
+            const string sql = @"INSERT INTO minute_bars (ts, instrument_key, open, high, low, close, volume, delta, rolling_cvd, oi)
+VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolling_cvd, @oi);";
+            var conn = new NpgsqlConnection(_connectionString);
+            await conn.OpenAsync();
+            var cmd = new NpgsqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("ts", bar.Time);
+            cmd.Parameters.AddWithValue("instrumentKey", instrumentKey);
+            cmd.Parameters.AddWithValue("open", bar.Open);
+            cmd.Parameters.AddWithValue("high", bar.High);
+            cmd.Parameters.AddWithValue("low", bar.Low);
+            cmd.Parameters.AddWithValue("close", bar.Close);
+            cmd.Parameters.AddWithValue("volume", bar.Volume);
+            cmd.Parameters.AddWithValue("delta", bar.Delta);
+            cmd.Parameters.AddWithValue("rolling_cvd", bar.RollingCvd);
+            cmd.Parameters.AddWithValue("oi", bar.OI);
+            await cmd.ExecuteNonQueryAsync();
+        }
+        #endregion
+
+        #region --- Candidate builder & helpers ------------------------------------
+        private EnhancedTradeCandidate BuildCandidate(string instrumentKey, List<MinuteRow> last30Mins, List<DailyStockRow> dailyStockHistory, List<DailyFutureRow> dailyFutureHistory)
+        {
+            var calc = _calculator;
+            var window = Math.Min(calc.RollingWindowMinutes, last30Mins.Count);
+            var lastWindow = last30Mins.Skip(Math.Max(0, last30Mins.Count - window)).ToList();
+            var (rollingCvd, slope, rawSpike) = calc.ComputeRollingCvdAndSpike(lastWindow);
+            double vwap = calc.ComputeVwap(last30Mins);
+            var last = last30Mins.Last();
+            var prev = last30Mins.Take(last30Mins.Count - 1).ToList();
+            double volumeRatio = calc.ComputeVolumeRatio(last, prev);
+            bool firstMinBreak = calc.CheckFirstMinuteBreakout(last30Mins);
+            bool fiveMinBreak = calc.CheckFiveMinuteBreakout(last30Mins);
+            var (near52, dist52) = calc.Check52Week(dailyStockHistory, last.Close);
+            var (support, sHits, resistance, rHits) = calc.ComputeSupportResistance(dailyStockHistory);
+
+            var (volScore, cvdScore, brScore) = calc.ComputeScores(volumeRatio, rollingCvd, slope, firstMinBreak, fiveMinBreak);
+            int total = volScore + cvdScore + brScore;
+            string signalStrength = total >= 7 ? "Strong" : total >= 4 ? "Neutral" : "Weak";
+
+            var cand = new EnhancedTradeCandidate
+            {
+                StockName = instrumentKey,
+                SpotPrice = ComputePercentChange(last.Close, dailyStockHistory.FirstOrDefault()?.Open ?? last.Close),
+                FuturePrice = ComputePercentChangeFromFuture(dailyFutureHistory),
+                OIChange = calc.ClassifyOIChange(GetLatestFutureOI(dailyFutureHistory), GetPrevFutureOI(dailyFutureHistory), ComputePercentChange(last.Close, dailyStockHistory.FirstOrDefault()?.Open ?? last.Close)),
+                VolumeStatus = volumeRatio >= 2 ? $"{volumeRatio:F2}x Avg" : $"{volumeRatio:F2}x",
+                VolumeRatio = Math.Round(volumeRatio, 2),
+                StockCVD = rollingCvd,
+                FuturesCVD = 0,
+                RollingDelta = last.Delta,
+                CVDStatus = slope > calc.CvdSlopeThreshold ? "Rising" : slope < -calc.CvdSlopeThreshold ? "Falling" : "Flat",
+                FirstMinuteBreakout = firstMinBreak ? "HighCross" : "None",
+                FiveMinuteBreakout = fiveMinBreak ? "HighCross" : "None",
+                VWAPStatus = last.Close >= vwap ? "Above" : "Below",
+                OpenHighLow = calc.CheckOpenHighLow(last30Mins.First()),
+                Near52WeekHigh = near52,
+                DistanceFrom52WH = dist52,
+                VolumeScore = volScore,
+                CVDScore = cvdScore,
+                BreakoutScore = brScore,
+                TotalScore = total,
+                SignalStrength = signalStrength,
+                Support = support.ToString("F2"),
+                Resistance = resistance.ToString("F2"),
+                SupportHit = sHits,
+                ResistanceHit = rHits
+            };
+
+            if (rawSpike) { cand.CVDStatus += " (Spike)"; }
+            return cand;
+        }
+
+        private double ComputePercentChange(double current, double open)
+        {
+            if (open == 0) return 0;
+            return 100.0 * (current - open) / open;
+        }
+
+        private double ComputePercentChangeFromFuture(List<DailyFutureRow> future)
+        {
+            if (future == null || future.Count == 0) return 0;
+            var today = future.First();
+            if (today.FutOpen == 0) return 0;
+            return 100.0 * (today.FutClose - today.FutOpen) / today.FutOpen;
+        }
+
+        private long GetLatestFutureOI(List<DailyFutureRow> fut)
+        {
+            if (fut == null || fut.Count == 0) return 0;
+            return fut.First().OpenInterest;
+        }
+        private long GetPrevFutureOI(List<DailyFutureRow> fut)
+        {
+            if (fut == null || fut.Count < 2) return 0;
+            return fut.Skip(1).First().OpenInterest;
+        }
+        #endregion
+
+        
+        #region --- Websocket skeleton (connect, receive, parse) ------------------
+        private async Task<string> FetchAccessToken()
+        {
+            string UpstoxLoingStatus = "";
+            try
+            {
+                var connectionString = "mongodb://localhost:27017";
+                var client1 = new MongoClient(connectionString);
+                var database = client1.GetDatabase("StockDB");
+                var collection = database.GetCollection<BsonDocument>("GetAccessToken");
+                var allDocuments = await collection.Find(new BsonDocument()).ToListAsync();
+                foreach (var doc in allDocuments)
+                {
+                    accessToken = doc["Token"].AsString;
+                    break;
+                }
+
+                var client = new RestClient("https://api.upstox.com/v2/");
+                var request = new RestRequest("market-quote/quotes", Method.Get);
+                request.AddHeader("Authorization", $"Bearer {accessToken}");
+                request.AddParameter("symbol", "NSE_EQ|INE466L01038");
+                RestResponse response = client.Execute(request);
+                if (response.IsSuccessful) UpstoxLoingStatus = "LoggedIn";
+            }
+            catch (Exception ex)
+            {
+                OutputTextBox.AppendText($"FetchAccessToken error: {ex.Message}\n");
+            }
+            return UpstoxLoingStatus;
+        }
+        private async Task Getsymbollist()
+        {
+            try
+            {
+                var dataFetcher = new InstrumentsData(accessToken);
+                var result = await dataFetcher.GetInstrumentsAsync();
+                var equitylist = result.Item1;
+                var fnolist = result.Item2;
+
+                foreach (var i in equitylist) instruments.Add(i.instrument_key);
+                foreach (var i in fnolist) instruments.Add(i.instrument_key);
+
+                foreach (var symbol in instruments)
+                {
+                    var eqItem = equitylist.FirstOrDefault(x => x.instrument_key == symbol);
+                    if (eqItem != null) { _instrumentNameMap[symbol] = eqItem.trading_symbol; continue; }
+
+                    var fnoItem = fnolist.FirstOrDefault(x => x.instrument_key == symbol);
+                    if (fnoItem != null) _instrumentNameMap[symbol] = fnoItem.trading_symbol;
+                }
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.Invoke(() => OutputTextBox.AppendText($"Getsymbollist error: {ex.Message}\n"));
+            }
+        }
+        private async Task StartAsync()
         {
             var MyLoginresult = await FetchAccessToken();
-
-            string UpstoxLoginStatus = MyLoginresult;
-
-            if (UpstoxLoginStatus == "")
+            if (string.IsNullOrEmpty(MyLoginresult))
             {
                 MessageBox.Show("Login Required");
                 return;
             }
-            await StartAsync(); 
-        }
-        private async Task<string> FetchAccessToken()
-        {
-            string UpstoxLoingStatus = "";
-            var connectionString = "mongodb://localhost:27017"; // Replace with your MongoDB URI
-            var client1 = new MongoClient(connectionString);
-
-            var database = client1.GetDatabase("StockDB");
-            var collection = database.GetCollection<BsonDocument>("GetAccessToken");
-
-            var allDocuments = await collection.Find(new BsonDocument()).ToListAsync();
-
-            // 4. Loop through results
-            foreach (var doc in allDocuments)
-            {
-                accessToken = doc["Token"].AsString;
-                // Break if you only need the first one
-                break;
-            }
-            var client = new RestClient("https://api.upstox.com/v2/");
-            var request = new RestRequest("market-quote/quotes", Method.Get);
-            request.AddHeader("Authorization", $"Bearer {accessToken}");
-            request.AddParameter("symbol", "NSE_EQ|INE466L01038");
-            RestResponse response = client.Execute(request);
-            if (response.IsSuccessful)
-            {
-                UpstoxLoingStatus = "LoggedIn";
-                
-
-            }
-            else
-            {
-                //UpstoxLoingStatus = "Login Required";
-               
-
-            }
-            await Task.CompletedTask;
-            return UpstoxLoingStatus;
-
-        }
-
-        private async void Stop_Click(object sender, RoutedEventArgs e)
-        {
-            try { if (_cts != null) _cts.Cancel(); } catch { }
-            if (webSocket != null && webSocket.State == WebSocketState.Open)
-                await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "User Stop", CancellationToken.None);
-        }
-        private void ClearSignals_Click(object sender, RoutedEventArgs e) { Signals.Clear(); }
-        private async void ExportCsv_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                var path = System.IO.Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-                    $"signals_{DateTime.Now:yyyyMMdd_HHmmss}.csv");
-
-                var lines = new List<string>();
-
-                // Add CSV header with proper escaping
-                lines.Add("\"Time\",\"Symbol\",\"LTP\",\"VWAP\",\"CVD1m\",\"Vol1m\",\"RecentHigh\",\"RecentLow\",\"Signal\",\"Reason\",\"SignalDirection\"");
-
-                foreach (var s in Signals.Reverse())
-                {
-                    // Proper CSV escaping: replace quotes with double quotes and wrap in quotes
-                    var reason = (s.Reason ?? "").Replace("\"", "\"\"");
-                    var symbol = (s.Symbol ?? "").Replace("\"", "\"\"");
-                    var signalType = (s.SignalType ?? "").Replace("\"", "\"\"");
-
-                    lines.Add($"\"{s.Time:HH:mm:ss}\",\"{symbol}\",{s.Ltp:F2},{s.VWAP:F2},{s.Cvd1m},{s.Vol1m},{s.RecentHigh:F2},{s.RecentLow:F2},\"{signalType}\",\"{reason}\",\"{s.SignalDirection}\"");
-                }
-
-                // Actually write the file (uncomment and fix this line)
-                using (var writer = new StreamWriter(path, false, Encoding.UTF8))
-                {
-                    foreach (var line in lines)
-                    {
-                        await writer.WriteLineAsync(line);
-                    }
-                }
-
-                OutputTextBox.AppendText($"Exported: {path}\n");
-
-                // Optional: Open the file after export
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = path,
-                    UseShellExecute = true
-                });
-            }
-            catch (Exception ex)
-            {
-                OutputTextBox.AppendText($"Export error: {ex.Message}\n");
-            }
-        }// =================== Your Startup ===================
-        // NOTE: you already have 'Start
-        // Async' skeleton; this merges engine + UI.
-
-        private async Task Getsymbollist()
-        {
-            var dataFetcher = new InstrumentsData(accessToken); // <-- your class/field
-
-            var result = await dataFetcher.GetInstrumentsAsync();
-            // tuple deconstruction supported since C# 7:
-            var equityList = result.Item1;
-            var fnoListLocal = result.Item2;
-            var niftyCE = result.Item3;
-            var niftyPE = result.Item4;
-            var bankniftyCE = result.Item5;
-            var bankniftyPEt = result.Item6;
-            var instrumentNameMap = result.Item7;
-
-
-
-
-            // Subscribe list (example: NIFTY options)
-            
-            //foreach (var i in niftyCE) if (!string.IsNullOrEmpty(i.instrument_key)) instruments.Add(i.instrument_key);
-            //foreach (var i in niftyPE) if (!string.IsNullOrEmpty(i.instrument_key)) instruments.Add(i.instrument_key);
-
-            foreach (var i in equityList) if (!string.IsNullOrEmpty(i.instrument_key)) instruments.Add(i.instrument_key);
-            //foreach (var i in fnoListLocal) if (!string.IsNullOrEmpty(i.instrument_key)) instruments.Add(i.instrument_key);
-
-
-            // Sets for filter
-            equitySet = new HashSet<string>(equityList.Select(x => x.instrument_key));
-            fnoSet = new HashSet<string>(fnoListLocal.Select(x => x.instrument_key));
-            foreach (var i in niftyCE) fnoSet.Add(i.instrument_key);
-            foreach (var i in niftyPE) fnoSet.Add(i.instrument_key);
-            //Dictionary<string, string> _instrumentNameMap = new Dictionary<string, string>();
-            foreach (var symbol in instruments)
-            {
-                // First check in equityList
-                var eqItem = equityList.FirstOrDefault(x => x.instrument_key == symbol);
-                if (eqItem != null)
-                {
-                    _instrumentNameMap[symbol] = eqItem.trading_symbol;
-                    continue; // found in equity, skip FNO check
-                }
-
-                // Then check in FNO list
-                var fnoItem = niftyPE.FirstOrDefault(x => x.instrument_key == symbol);
-                if (fnoItem != null)
-                {
-                    _instrumentNameMap[symbol] = fnoItem.trading_symbol;
-                }
-            }
-            await Task.CompletedTask;
-        }
-        private async Task StartAsync()
-        {
+            await Getsymbollist();
             _cts = new CancellationTokenSource();
 
-            
             try
             {
-                webSocket = new ClientWebSocket();
-                webSocket.Options.KeepAliveInterval = TimeSpan.FromSeconds(30);
-
-                var wsUrl = await GetWebSocketUrlAsync(); // <-- your function
+                webSocket = new ClientWebSocket { Options = { KeepAliveInterval = TimeSpan.FromSeconds(30) } };
+                var wsUrl = await GetWebSocketUrlAsync();
                 if (wsUrl == null) return;
 
                 await webSocket.ConnectAsync(new Uri(wsUrl), _cts.Token);
+                await SendSubscriptionAsync(instruments);
 
-                await SendSubscriptionAsync(instruments); // <-- your function
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    OutputTextBox.AppendText($"Connected & subscribed to {instruments.Count} instruments.\n");
+                    StatusText.Text = "Connected";
+                    StatusText.Foreground = Brushes.Green;
+                    ConnectionStatus.Text = "Connected";
+                    ConnectionStatus.Foreground = Brushes.LightGreen;
+                });
 
-               
-
-                
-
-              
-                OutputTextBox.AppendText(string.Format("Connected & subscribed to {0} instruments.\n", instruments.Count));
-
-                await ReceiveMessages();
+                _ = Task.Run(() => ReceiveMessages());
             }
             catch (Exception ex)
             {
-                Dispatcher.Invoke(delegate { OutputTextBox.AppendText("Error in StartAsync: " + ex.Message + "\n"); });
+                await Dispatcher.InvokeAsync(() => OutputTextBox.AppendText($"Error in StartAsync: {ex.Message}\n"));
             }
         }
+
         private async Task<string> GetWebSocketUrlAsync()
         {
-            var client = new RestClient("https://api.upstox.com/v3");
-            var request = new RestRequest("/feed/market-data-feed/authorize", Method.Get);
-            request.AddHeader("Authorization", $"Bearer {accessToken}");
-            request.AddHeader("Accept", "application/json");
-            request.AddHeader("Api-Version", "3.0");
-
-            var response = await client.ExecuteAsync(request);
-            Dispatcher.Invoke(() => OutputTextBox.Text += $"Authorize response: {response.Content}\n");
-
-            if (response.IsSuccessful)
+            try
             {
-                var json = JsonDocument.Parse(response.Content);
-                if (json.RootElement.GetProperty("status").GetString() == "success")
+                var client = new RestClient("https://api.upstox.com/v3");
+                var request = new RestRequest("/feed/market-data-feed/authorize", Method.Get)
+                    .AddHeader("Authorization", $"Bearer {accessToken}")
+                    .AddHeader("Accept", "application/json")
+                    .AddHeader("Api-Version", "3.0");
+
+                var response = await client.ExecuteAsync(request);
+                await Dispatcher.InvokeAsync(() =>
                 {
-                    var wsUrl = json.RootElement.GetProperty("data").GetProperty("authorizedRedirectUri").GetString();
-                    Dispatcher.Invoke(() => OutputTextBox.Text += $"Retrieved WebSocket URL: {wsUrl}\n");
-                    return wsUrl;
+                    OutputTextBox.AppendText($"Authorize response: {response.Content}\n");
+                });
+
+                
+
+                if (response.IsSuccessful)
+                {
+                    var json = JsonDocument.Parse(response.Content);
+                    if (json.RootElement.GetProperty("status").GetString() == "success")
+                        return json.RootElement.GetProperty("data").GetProperty("authorizedRedirectUri").GetString();
                 }
             }
+            catch (Exception ex)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    OutputTextBox.AppendText($"GetWebSocketUrlAsync error: {ex.Message}\n");
+                });
 
-            Dispatcher.Invoke(() => OutputTextBox.Text += $"Error retrieving WebSocket URL: {response.ErrorMessage ?? response.Content}\n");
+                
+            }
             return null;
         }
 
@@ -393,866 +903,994 @@ namespace CVD
         {
             try
             {
-                int batchSize = 100; // adjust based on API limits
+                const int batchSize = 50;
                 for (int i = 0; i < instrumentKeys.Count; i += batchSize)
                 {
                     var batch = instrumentKeys.Skip(i).Take(batchSize).ToList();
-
                     var subscriptionJson = $@"{{
                         ""guid"": ""{Guid.NewGuid()}"",
                         ""method"": ""sub"",
                         ""data"": {{
-                            ""mode"": ""full"",
+                            ""mode"": ""full_d30"",
                             ""instrumentKeys"": [{string.Join(",", batch.Select(k => $"\"{k}\""))}]
-                            }}
-                        }}";
+                        }}
+                    }}";
 
-                    var subscriptionBytes = Encoding.UTF8.GetBytes(subscriptionJson);
-                    await webSocket.SendAsync(new ArraySegment<byte>(subscriptionBytes), WebSocketMessageType.Binary, true, CancellationToken.None);
-
-                    // Optional: avoid flooding
+                    var bytes = Encoding.UTF8.GetBytes(subscriptionJson);
+                    await webSocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Binary, true, _cts.Token);
                     await Task.Delay(200);
                 }
             }
             catch (Exception ex)
             {
-                Dispatcher.Invoke(() => OutputTextBox.Text += $"Error sending subscription: {ex.Message}\n");
+                OutputTextBox.AppendText($"Error sending subscription: {ex.Message}\n");
             }
         }
 
 
-        // =================== Socket Loop ===================
-        // Buffer to accumulate partial WebSocket binary frames
-        private List<byte> binaryBuffer = new List<byte>();
 
+        #region new code try 
         private async Task ReceiveMessages()
         {
-            try
+            var buffer = new byte[64 * 1024];
+            int retryCount = 0;
+            const int maxRetries = 5;
+
+            while (!_cts.IsCancellationRequested && retryCount < maxRetries)
             {
-                var buffer = new byte[1024 * 64];
-
-                while (webSocket.State == WebSocketState.Open && !_cts.IsCancellationRequested)
+                try
                 {
-                    try
+                    while (webSocket.State == WebSocketState.Open && !_cts.IsCancellationRequested)
                     {
-                        var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
-
-                        // ---------------------- Binary Messages ----------------------
-                        if (result.MessageType == WebSocketMessageType.Binary)
+                        var ms = new MemoryStream();
+                        WebSocketReceiveResult result;
+                        do
                         {
-                            // Add received bytes to our buffer
-                            binaryBuffer.AddRange(buffer.Take(result.Count));
+                            result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
+                            ms.Write(buffer, 0, result.Count);
+                        }
+                        while (!result.EndOfMessage && !_cts.IsCancellationRequested);
 
-                            // If this is the final chunk of the message, parse it
-                            if (result.EndOfMessage)
-                            {
+                        if (_cts.IsCancellationRequested) break;
+
+                        ms.Position = 0;
+
+                        switch (result.MessageType)
+                        {
+                            case WebSocketMessageType.Text:
+                                using (var reader = new StreamReader(ms, Encoding.UTF8))
+                                {
+                                    var text = await reader.ReadToEndAsync();
+                                    await ProcessTextMessage(text);
+                                }
+                                break;
+
+                            case WebSocketMessageType.Binary:
                                 try
                                 {
-                                    using (var ms = new MemoryStream(binaryBuffer.ToArray()))
-                                    {
-                                        var feedResponse = FeedResponse.Parser.ParseFrom(ms);
-                                        await ProcessFeedResponse(feedResponse);
-                                    }
-                                    
+                                    var feedResponse = FeedResponse.Parser.ParseFrom(ms);
+                                    await ProcessFeedResponse(feedResponse);
                                 }
                                 catch (Exception ex)
                                 {
-                                    Dispatcher.Invoke(() =>
-                                    {
-                                        OutputTextBox.AppendText("Error parsing FeedResponse: " + ex.Message + "\n");
-                                    });
+                                    await Dispatcher.InvokeAsync(() => OutputTextBox.AppendText($"Binary parse error: {ex.Message}\n"));
                                 }
-                                finally
-                                {
-                                    binaryBuffer.Clear(); // Always clear buffer after processing
-                                }
-                            }
-                        }
-                        // ---------------------- Text Messages ----------------------
-                        else if (result.MessageType == WebSocketMessageType.Text)
-                        {
-                            var text = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                            Dispatcher.Invoke(() =>
-                            {
-                                OutputTextBox.AppendText("[Text] " + text + "\n");
-                            });
-                        }
-                        // ---------------------- Close Messages ----------------------
-                        else if (result.MessageType == WebSocketMessageType.Close)
-                        {
-                            Dispatcher.Invoke(() =>
-                            {
-                                OutputTextBox.AppendText("WebSocket closed. Status: " + result.CloseStatus + "\n");
-                            });
-                            break;
+                                break;
+
+                            case WebSocketMessageType.Close:
+                                await Dispatcher.InvokeAsync(() => OutputTextBox.AppendText($"WebSocket closed: {result.CloseStatus}\n"));
+                                return;
                         }
                     }
-                    catch (WebSocketException ex)
+                }
+                catch (OperationCanceledException)
+                {
+                    await Dispatcher.InvokeAsync(() => OutputTextBox.AppendText("Receive loop cancelled\n"));
+                }
+                catch (Exception ex)
+                {
+                    await Dispatcher.InvokeAsync(() => OutputTextBox.AppendText($"Receive loop error: {ex.Message}. Retrying...\n"));
+                    retryCount++;
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, retryCount)));
+                    if (webSocket.State != WebSocketState.Open)
                     {
-                        Dispatcher.Invoke(() =>
-                        {
-                            OutputTextBox.AppendText("WebSocket error: " + ex.Message + ". State: " + webSocket.State + "\n");
-                        });
-                        break;
+                        await ReconnectWebSocket();
                     }
+                }
+            }
+
+            if (retryCount >= maxRetries)
+            {
+                await Dispatcher.InvokeAsync(() => OutputTextBox.AppendText("Max retry attempts reached. Giving up.\n"));
+            }
+        }
+
+        private async Task ReconnectWebSocket()
+        {
+            try
+            {
+                // Clean up old connection
+                if (webSocket != null)
+                {
+                    try
+                    {
+                        if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived)
+                        {
+                            await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Reconnecting", CancellationToken.None);
+                        }
+                        webSocket.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            OutputTextBox.AppendText($"Error closing old WebSocket: {ex.Message}\n");
+                        });
+                    }
+                    webSocket = null;
+                }
+
+                // Create new connection
+                webSocket = new ClientWebSocket
+                {
+                    Options = { KeepAliveInterval = TimeSpan.FromSeconds(30) }
+                };
+
+                var wsUrl = await GetWebSocketUrlAsync();
+                await webSocket.ConnectAsync(new Uri(wsUrl), _cts.Token);
+
+                // Resubscribe to instruments
+                await SendSubscriptionAsync(instruments);
+
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    OutputTextBox.AppendText("✅ WebSocket reconnected successfully\n");
+                    ConnectionStatus.Text = "Connected";
+                    ConnectionStatus.Foreground = Brushes.Green;
+                });
+            }
+            catch (Exception ex)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    OutputTextBox.AppendText($"❌ Reconnection failed: {ex.Message}\n");
+                    ConnectionStatus.Text = "Failed";
+                    ConnectionStatus.Foreground = Brushes.Red;
+                });
+                throw;
+            }
+        }
+        private async Task ProcessCompleteMessage(WebSocketMessageType messageType, MemoryStream ms)
+        {
+            switch (messageType)
+            {
+                case WebSocketMessageType.Text:
+                    using (var reader = new StreamReader(ms, Encoding.UTF8))
+                    {
+                        var text = await reader.ReadToEndAsync();
+                        await ProcessTextMessage(text);
+                    }
+                    break;
+
+                case WebSocketMessageType.Binary:
+                    try
+                    {
+                        var feedResponse = FeedResponse.Parser.ParseFrom(ms);
+                        await ProcessFeedResponse(feedResponse);
+                    }
+                    catch (Exception ex)
+                    {
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            OutputTextBox.AppendText($"Binary parse error: {ex.Message}\n");
+                        });
+                    }
+                    break;
+            }
+        }
+
+        private async Task HandleCloseMessage(WebSocketReceiveResult result)
+        {
+            var closeReason = result.CloseStatus.HasValue
+                ? $"{result.CloseStatus}: {result.CloseStatusDescription ?? "No reason"}"
+                : "No close status provided";
+
+            await Dispatcher.InvokeAsync(() =>
+            {
+                OutputTextBox.AppendText($"WebSocket closed by server: {closeReason}\n");
+            });
+        }
+
+        private async Task HandleReconnection(int retryCount, int maxRetries, string reason)
+        {
+            await Dispatcher.InvokeAsync(() =>
+                OutputTextBox.AppendText($"{reason}. Retry {retryCount}/{maxRetries}\n"));
+
+            await CleanupWebSocket();
+
+            // Progressive delay
+            int delaySeconds = Math.Min(30, 5 * (int)Math.Pow(2, retryCount - 1));
+            await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
+        }
+        private async Task CleanupWebSocket()
+        {
+            if (webSocket != null)
+            {
+                try
+                {
+                    // Don't try to close if already in a terminal state
+                    if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived)
+                    {
+                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Cleaning up", CancellationToken.None);
+                    }
+                }
+                catch
+                {
+                    // Ignore errors during cleanup
+                }
+                finally
+                {
+                    webSocket.Dispose();
+                    webSocket = null;
+                }
+            }
+        }
+        #endregion
+        private async Task ProcessFeedResponse(FeedResponse feedResponse)
+        {
+            _lastMessageTime = DateTime.Now; // Update watchdog timer
+            if (feedResponse?.Feeds == null) return;
+
+            try
+            {
+                foreach (var kvp in feedResponse.Feeds)
+                {
+                    await ProcessSingleFeed(kvp.Key, kvp.Value);
+                }
+
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    //LastScanText.Text = DateTime.Now.ToString("HH:mm:ss");
+                });
+            }
+            catch (Exception ex)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    OutputTextBox.AppendText($"ProcessFeedResponse error: {ex.Message}\n");
+                });
+            }
+        }
+
+        private async Task ProcessTextMessage(string text)
+        {
+            try
+            {
+                OutputTextBox.AppendText($"Received text message: {text}\n");
+                var jsonDoc = JsonDocument.Parse(text);
+                var root = jsonDoc.RootElement;
+
+                if (root.TryGetProperty("type", out var typeElement) && typeElement.GetString() == "market_info")
+                {
+                    OutputTextBox.AppendText("Market info received - markets are open\n");
+                }
+
+                if (root.TryGetProperty("code", out var codeElement) && codeElement.GetInt32() == 200)
+                {
+                    OutputTextBox.AppendText("Subscription successful\n");
                 }
             }
             catch (Exception ex)
             {
-                Dispatcher.Invoke(() =>
-                {
-                    OutputTextBox.AppendText("Error in ReceiveMessages: " + ex.Message + "\n");
-                });
+                OutputTextBox.AppendText($"Error processing text message: {ex.Message}\n");
             }
-            finally
-            {
-                try
-                {
-                    if (webSocket != null && webSocket.State == WebSocketState.Open)
-                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-                }
-                catch { }
-                webSocket?.Dispose();
-                webSocket = null;
-            }
-        }
-
-        // =================== Core: Process Feed ===================
-        private async Task ProcessFeedResponse(FeedResponse feedResponse)
-        {
-            if (feedResponse.Type == Type.LiveFeed && feedResponse.Feeds != null)
-            {
-                foreach (var kv in feedResponse.Feeds)
-                {
-                    var key = kv.Key;
-                    var feed = kv.Value;
-
-                    //if (OnlyFNOCheck.IsChecked == true && fnoSet.Count > 0 && !fnoSet.Contains(key))
-                    //    continue;
-
-                    // Try ltpc from direct feed (ltpc or firstLevelWithGreeks)
-                    var ltpcObj = feed.Ltpc;
-
-                    // If still null, try from fullFeed.marketFF
-                    if (ltpcObj == null)
-                        ltpcObj = feed.FullFeed?.MarketFF?.Ltpc;
-
-                    if (ltpcObj == null)
-                        return; // No price data, skip
-
-                    double ltp = ltpcObj.Ltp;
-                    long lttMs = ltpcObj.Ltt;
-                    if (ltp <= 0 || lttMs == 0) return;
-
-                    DateTime t = DateTimeOffset.FromUnixTimeMilliseconds(lttMs).LocalDateTime;
-                    int ltq = (int)ltpcObj.Ltq;
-
-
-                    //DateTime t = DateTimeOffset.FromUnixTimeMilliseconds(lttMs).LocalDateTime;
-                    //int ltq = (int)(feed.Ltpc?.Ltq ?? 0);
-
-                    // ---- Level-1 best bid/ask ----
-                    double bestBid = 0, bestAsk = 0;
-                    int bidQty = 0, askQty = 0;
-
-                    var full = feed.FullFeed;
-                    if (full?.MarketFF?.MarketLevel?.BidAskQuote?.Count >= 2)
-                    {
-                        var best5 = full.MarketFF.MarketLevel.BidAskQuote;
-                        var b0 = best5.FirstOrDefault(q => q.BidP > 0);
-                        var a0 = best5.FirstOrDefault(q => q.AskP > 0);
-
-                        if (b0 != null && a0 != null)
-                        {
-                            bestBid = b0.BidP;
-                            bidQty = (int)b0.BidQ;
-                            bestAsk = a0.AskP;
-                            askQty = (int)a0.AskQ;
-                        }
-                    }
-
-                    // Fallback if no best bid/ask
-                    if (bestBid <= 0 || bestAsk <= 0)
-                    {
-                        bestBid = ltp * 0.9995;
-                        bestAsk = ltp * 1.0005;
-                        int q = ltq > 0 ? ltq : 1;
-                        bidQty = q;
-                        askQty = q;
-                    }
-
-                    _engine.OnTick(key, t, ltp, ltq, bestBid, bidQty, bestAsk, askQty);
-                }
-            }
-
-                
-
             await Task.CompletedTask;
         }
 
+        private async Task ProcessSingleFeed(string instrumentKey, Feed feed)
+        {
+            try
+            {
+                double? bestBidPrice = null;
+                double? bestAskPrice = null;
+                long? bestBidQty = null;
+                long? bestAskQty = null;
+
+                if (feed?.FullFeed?.MarketFF == null) return;
+                var data = feed.FullFeed.MarketFF;
+
+                if (data.MarketLevel?.BidAskQuote != null && data.MarketLevel.BidAskQuote.Count > 0)
+                {
+                    var topQuote = data.MarketLevel.BidAskQuote[0];
+                    bestBidPrice = topQuote.BidP;
+                    bestAskPrice = topQuote.AskP;
+                    bestBidQty = topQuote.BidQ;
+                    bestAskQty = topQuote.AskQ;
+                }
+
+                double price = data.Ltpc?.Ltp ?? 0;
+                if (price <= 0) return;
+
+                double cvd = CalculateCVD(data);
+                double? orderImbalance = CalculateOrderImbalance(feed);
+                long size = data.Vtt;
+
+                if (!_instrumentNameMap.TryGetValue(instrumentKey, out string name))
+                    name = instrumentKey;
+
+                var tick = new RawTick
+                {
+                    Ts = DateTime.UtcNow,
+                    InstrumentKey = instrumentKey,
+                    InstrumentName = name,
+                    Price = price,
+                    Size = size,
+                    BidPrice = bestBidPrice,
+                    BidQty = bestBidQty,
+                    AskPrice = bestAskPrice,
+                    AskQty = bestAskQty,
+                    OI = data.Oi,
+                    Cvd = cvd,
+                    OrderImbalance = orderImbalance
+                };
+
+                await _tickProcessor.StoreRawTickAsync(tick);
+                await AddTickAndAggregate(tick);
+            }
+            catch (Exception ex)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    OutputTextBox.AppendText($"ProcessSingleFeed error: {ex.Message}\n");
+                });
+            }
+        }
+
+        public void Dispose()
+        {
+            _tickProcessor?.Dispose();
+        }
+
+
+        #region --- Charting -------------------------------------------------------
+        //private async void LoadChart_Click(object sender, RoutedEventArgs e)
+        //{
+        //    if (SymbolCombo.SelectedItem == null) return;
+        //    string sym = SymbolCombo.SelectedItem.ToString();
+        //    sym = "NSE_EQ|INE075A01022";
+        //    int tf = int.Parse(((System.Windows.Controls.ComboBoxItem)TimeframeCombo.SelectedItem).Content.ToString());
+        //    var minutes = await LoadLastNMinutes(sym, 240);
+        //    var agg = AggregateToTF(minutes, tf);
+        //    DrawPriceChart(agg);
+        //}
+
+        private List<MinuteRow> AggregateToTF(List<MinuteRow> minutes, int tf)
+        {
+            var list = new List<MinuteRow>();
+            if (!minutes.Any()) return list;
+            var ordered = minutes.OrderBy(m => m.Time).ToList();
+            for (int i = 0; i < ordered.Count; i += tf)
+            {
+                var bucket = ordered.Skip(i).Take(tf).ToList();
+                if (!bucket.Any()) break;
+                var b = new MinuteRow
+                {
+                    Time = bucket.First().Time,
+                    Open = bucket.First().Open,
+                    High = bucket.Max(x => x.High),
+                    Low = bucket.Min(x => x.Low),
+                    Close = bucket.Last().Close,
+                    Volume = bucket.Sum(x => x.Volume),
+                    Delta = bucket.Sum(x => x.Delta),
+                    RollingCvd = bucket.Last().RollingCvd,
+                    OI = bucket.Last().OI
+                };
+                list.Add(b);
+            }
+            return list;
+        }
+        //private void DrawPriceChart(List<MinuteRow> bars)
+        //{
+        //    PriceCanvas.Children.Clear();
+        //    CvdCanvas.Children.Clear();
+        //    if (bars == null || bars.Count == 0) return;
+
+        //    double w = PriceCanvas.ActualWidth; if (w == 0) w = PriceCanvas.Width = 900;
+        //    double h = PriceCanvas.ActualHeight; if (h == 0) h = PriceCanvas.Height = 400;
+        //    double cvdh = CvdCanvas.ActualHeight; if (cvdh == 0) cvdh = CvdCanvas.Height = 140;
+
+        //    double minP = bars.Min(b => b.Low);
+        //    double maxP = bars.Max(b => b.High);
+        //    double minCvd = bars.Min(b => b.RollingCvd);
+        //    double maxCvd = bars.Max(b => b.RollingCvd);
+
+        //    if (minP == maxP) { minP -= 1; maxP += 1; }
+        //    if (minCvd == maxCvd) { minCvd -= 1; maxCvd += 1; }
+
+        //    int n = bars.Count;
+        //    double xStep = w / Math.Max(1, n - 1);
+
+        //    //-----------------------------------
+        //    // PRICE CANDLESTICKS
+        //    //-----------------------------------
+        //    double candleWidth = xStep * 0.6;
+        //    for (int i = 0; i < n; i++)
+        //    {
+        //        var b = bars[i];
+        //        double x = i * xStep;
+
+        //        double yHigh = h - ((b.High - minP) / (maxP - minP) * h);
+        //        double yLow = h - ((b.Low - minP) / (maxP - minP) * h);
+        //        double yOpen = h - ((b.Open - minP) / (maxP - minP) * h);
+        //        double yClose = h - ((b.Close - minP) / (maxP - minP) * h);
+
+        //        // wick
+        //        var wick = new Line
+        //        {
+        //            X1 = x,
+        //            X2 = x,
+        //            Y1 = yHigh,
+        //            Y2 = yLow,
+        //            Stroke = Brushes.Gray,
+        //            StrokeThickness = 1
+        //        };
+        //        PriceCanvas.Children.Add(wick);
+
+        //        // body
+        //        var body = new Rectangle
+        //        {
+        //            Width = candleWidth,
+        //            Height = Math.Max(1, Math.Abs(yOpen - yClose)),
+        //            Fill = b.Close >= b.Open ? Brushes.LimeGreen : Brushes.Red,
+        //            Stroke = Brushes.Transparent
+        //        };
+        //        Canvas.SetLeft(body, x - candleWidth / 2);
+        //        Canvas.SetTop(body, Math.Min(yOpen, yClose));
+        //        PriceCanvas.Children.Add(body);
+        //    }
+
+        //    //-----------------------------------
+        //    // PRICE TREND LINE (Overlay)
+        //    //-----------------------------------
+        //    var priceLine = new Polyline { Stroke = Brushes.Yellow, StrokeThickness = 1.5 };
+        //    for (int i = 0; i < n; i++)
+        //    {
+        //        var b = bars[i];
+        //        double x = i * xStep;
+        //        double y = h - ((b.Close - minP) / (maxP - minP) * h);
+        //        priceLine.Points.Add(new Point(x, y));
+        //    }
+        //    PriceCanvas.Children.Add(priceLine);
+
+        //    //-----------------------------------
+        //    // CVD TREND LINE
+        //    //-----------------------------------
+        //    var cvdLine = new Polyline { Stroke = Brushes.Orange, StrokeThickness = 1.5 };
+        //    for (int i = 0; i < n; i++)
+        //    {
+        //        var b = bars[i];
+        //        double x = i * xStep;
+        //        double y = cvdh - ((b.RollingCvd - minCvd) / (maxCvd - minCvd) * cvdh);
+        //        cvdLine.Points.Add(new Point(x, y));
+        //    }
+        //    CvdCanvas.Children.Add(cvdLine);
+        //}
+
+
+        //private void DrawPriceChart(List<MinuteRow> bars)
+        //{
+        //    PriceCanvas.Children.Clear();
+        //    CvdCanvas.Children.Clear();
+        //    if (bars == null || bars.Count == 0) return;
+
+        //    double w = PriceCanvas.ActualWidth; if (w == 0) w = PriceCanvas.Width = 900;
+        //    double h = PriceCanvas.ActualHeight; if (h == 0) h = PriceCanvas.Height = 400;
+        //    double cvdh = CvdCanvas.ActualHeight; if (cvdh == 0) cvdh = CvdCanvas.Height = 140;
+
+        //    double minP = bars.Min(b => b.Low); double maxP = bars.Max(b => b.High);
+        //    double minCvd = bars.Min(b => b.RollingCvd); double maxCvd = bars.Max(b => b.RollingCvd);
+        //    if (minP == maxP) { minP -= 1; maxP += 1; }
+        //    if (minCvd == maxCvd) { minCvd -= 1; maxCvd += 1; }
+
+        //    int n = bars.Count;
+        //    double xStep = w / Math.Max(1, n - 1);
+
+        //    var priceLine = new Polyline { Stroke = Brushes.LightGreen, StrokeThickness = 1.5 };
+        //    for (int i = 0; i < n; i++)
+        //    {
+        //        var b = bars[i];
+        //        double x = i * xStep;
+        //        double y = h - ((b.Close - minP) / (maxP - minP) * h);
+        //        priceLine.Points.Add(new Point(x, y));
+        //    }
+        //    PriceCanvas.Children.Add(priceLine);
+
+        //    for (int i = 0; i < n; i++)
+        //    {
+        //        double x = i * xStep;
+        //        var b = bars[i];
+        //        double yOpen = h - ((b.Open - minP) / (maxP - minP) * h);
+        //        double yClose = h - ((b.Close - minP) / (maxP - minP) * h);
+        //        double yHigh = h - ((b.High - minP) / (maxP - minP) * h);
+        //        double yLow = h - ((b.Low - minP) / (maxP - minP) * h);
+
+        //        var line = new Line { X1 = x, X2 = x, Y1 = yHigh, Y2 = yLow, Stroke = Brushes.Gray, StrokeThickness = 1 };
+        //        PriceCanvas.Children.Add(line);
+        //        var rect = new Rectangle { Width = Math.Max(2, xStep * 0.5), Height = Math.Max(1, Math.Abs(yOpen - yClose)), Stroke = Brushes.Transparent };
+        //        Canvas.SetLeft(rect, x - rect.Width / 2);
+        //        Canvas.SetTop(rect, Math.Min(yOpen, yClose));
+        //        rect.Fill = b.Close >= b.Open ? Brushes.Green : Brushes.Red;
+        //        PriceCanvas.Children.Add(rect);
+        //    }
+
+        //    var cvdLine = new Polyline { Stroke = Brushes.Orange, StrokeThickness = 1.5 };
+        //    for (int i = 0; i < n; i++)
+        //    {
+        //        var b = bars[i];
+        //        double x = i * xStep;
+        //        double y = cvdh - ((b.RollingCvd - minCvd) / (maxCvd - minCvd) * cvdh);
+        //        cvdLine.Points.Add(new Point(x, y));
+        //    }
+        //    CvdCanvas.Children.Add(cvdLine);
+        //}
+        #endregion
+
+
+        //private async Task ProcessSingleFeed(string instrumentKey, Feed feed)
+        //{
+        //    try
+        //    {
+        //        double? bestBidPrice = null;
+        //        double? bestAskPrice = null;
+        //        long? bestBidQty = null;
+        //        long? bestAskQty = null;
+
+        //        if (feed?.FullFeed?.MarketFF == null) return;
+        //        var data = feed.FullFeed.MarketFF;
+
+        //        if (data.MarketLevel?.BidAskQuote != null && data.MarketLevel.BidAskQuote.Count > 0)
+        //        {
+        //            var topQuote = data.MarketLevel.BidAskQuote[0];
+        //            bestBidPrice = topQuote.BidP;
+        //            bestAskPrice = topQuote.AskP;
+        //            bestBidQty = topQuote.BidQ;
+        //            bestAskQty = topQuote.AskQ;
+        //        }
+
+        //        double price = data.Ltpc?.Ltp ?? 0;
+        //        if (price <= 0) return;
+
+        //        double cvd = CalculateCVD(data);
+        //        double? orderImbalance = CalculateOrderImbalance(feed);
+        //        long size = data.Vtt;
+
+
+        //        if (!_instrumentNameMap.TryGetValue(instrumentKey, out string name))
+        //            name = instrumentKey;
+
+        //        var tick = new RawTick
+        //        {
+        //            Ts = DateTime.UtcNow,
+        //            InstrumentKey = instrumentKey,
+        //            InstrumentName = name,
+        //            Price = price,
+        //            Size = size,
+        //            BidPrice = bestBidPrice,
+        //            BidQty = bestBidQty,
+        //            AskPrice = bestAskPrice,
+        //            AskQty = bestAskQty,
+        //            OI = data.Oi,
+        //            Cvd = cvd,
+        //            OrderImbalance = orderImbalance
+        //        };
+
+        //        await StoreRawTickAsync(tick);
+        //        await AddTickAndAggregate(tick);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        MessageBox.Show($"{ex.Message}\n\n{ex.StackTrace}");
+        //        await Dispatcher.InvokeAsync(() => { OutputTextBox.AppendText($"ProcessSingleFeed error: {ex.Message}\n{ex.StackTrace}\n"); });
+        //    }
+
+        //}
+        private double CalculateCVD(MarketFullFeed data)
+        {
+            double price = data.Ltpc?.Ltp ?? 0;
+            double volume = data.Vtt;
+            double? bestBid = null;
+            double? bestAsk = null;
+
+            if (data.MarketLevel?.BidAskQuote != null && data.MarketLevel.BidAskQuote.Count > 0)
+            {
+                var topQuote = data.MarketLevel.BidAskQuote[0];
+                bestBid = topQuote.BidP;
+                bestAsk = topQuote.AskP;
+            }
+
+            // Determine delta side based on trade price relative to bid/ask
+            if (bestAsk.HasValue && Math.Abs(price - bestAsk.Value) < 0.001)
+            {
+                // Trade occurred at ask — buyer aggressive
+                return volume;
+            }
+            else if (bestBid.HasValue && Math.Abs(price - bestBid.Value) < 0.001)
+            {
+                // Trade occurred at bid — seller aggressive
+                return -volume;
+            }
+            else
+            {
+                // Mid or unknown execution — neutral
+                return 0;
+            }
+        }
+
+
+
+        //private async Task AddTickAndAggregate(RawTick tick)
+        //{
+        //    if (!_tickBuffer.ContainsKey(tick.InstrumentKey))
+        //        _tickBuffer[tick.InstrumentKey] = new List<RawTick>();
+        //    _tickBuffer[tick.InstrumentKey].Add(tick);
+
+        //    var currentMinute = new DateTime(tick.Ts.Year, tick.Ts.Month, tick.Ts.Day, tick.Ts.Hour, tick.Ts.Minute, 0);
+        //    if (!_lastMinuteBar.ContainsKey(tick.InstrumentKey))
+        //        _lastMinuteBar[tick.InstrumentKey] = currentMinute;
+
+        //    // check if buffer crossed into next minute
+        //    if (currentMinute > _lastMinuteBar[tick.InstrumentKey])
+        //    {
+        //        var ticks = _tickBuffer[tick.InstrumentKey];
+        //        var bar = AggregateToMinute(ticks);
+        //        if (bar != null)
+        //        {
+        //            await InsertMinuteBarAsync(bar, tick.InstrumentKey);
+        //            //RecalculateCandidate(tick.InstrumentKey);
+        //        }
+
+        //        _tickBuffer[tick.InstrumentKey].Clear();
+        //        _lastMinuteBar[tick.InstrumentKey] = currentMinute;
+        //    }
+        //}
+
+        //private MinuteRow AggregateToMinute(List<RawTick> ticks)
+        //{
+        //    if (ticks == null || ticks.Count == 0) return null;
+
+        //    var ordered = ticks.OrderBy(t => t.Ts).ToList();
+        //    string instrumentKey = ordered.First().InstrumentKey;
+        //    double open = ordered.First().Price;
+        //    double close = ordered.Last().Price;
+        //    double high = ordered.Max(t => t.Price);
+        //    double low = ordered.Min(t => t.Price);
+        //    long volume = ordered.Sum(t => t.Size);
+        //    long delta = (long)ordered.Sum(t => t.Cvd ?? 0);
+
+        //    // Get last CVD from cache instead of database
+        //    double lastCvd = GetLastCVD(instrumentKey);
+        //    double rolling = lastCvd + delta;
+
+        //    var minuteRow = new MinuteRow
+        //    {
+        //        Time = new DateTime(ordered.First().Ts.Year, ordered.First().Ts.Month, ordered.First().Ts.Day, ordered.First().Ts.Hour, ordered.First().Ts.Minute, 0),
+        //        Open = open,
+        //        High = high,
+        //        Low = low,
+        //        Close = close,
+        //        Volume = volume,
+        //        Delta = delta,
+        //        RollingCvd = rolling,
+        //        OI = ordered.Last().OI ?? 0
+        //    };
+
+        //    // Update cache with new rolling CVD value
+        //    UpdateCvd(instrumentKey, rolling);
+
+        //    return minuteRow;
+        //}
+
+        //private double GetLastCVD(string key)
+        //{
+        //    try
+        //    {
+        //        var conn = new NpgsqlConnection(_connectionString);
+        //        conn.Open();
+        //        var cmd = new NpgsqlCommand("SELECT rolling_cvd FROM minute_bars WHERE instrument_key=@k ORDER BY ts DESC LIMIT 1", conn);
+        //        cmd.Parameters.AddWithValue("k", key);
+        //        var res = cmd.ExecuteScalar();
+        //        return res == null ? 0 : Convert.ToDouble(res);
+        //    }
+        //    catch { return 0; }
+        //}
+
+        #endregion
+
+        #region --- Candidate Calculation & UI Refresh ----------------------
+        private double? CalculateOrderImbalance(Feed feed)
+        {
+            if (feed?.FullFeed?.MarketFF?.MarketLevel?.BidAskQuote == null ||
+                feed.FullFeed.MarketFF.MarketLevel.BidAskQuote.Count == 0)
+                return null;
+
+            var topQuote = feed.FullFeed.MarketFF.MarketLevel.BidAskQuote[0];
+
+            // Ensure we have valid bid/ask quantities
+            if (topQuote.BidQ == 0 && topQuote.AskQ == 0)
+                return null;
+
+            // Order Imbalance = (Bid Qty - Ask Qty) / (Bid Qty + Ask Qty)
+            double total = topQuote.BidQ + topQuote.AskQ;
+            if (total == 0) return null;
+
+            return (topQuote.BidQ - topQuote.AskQ) / total;
+        }
+        private async void RecalculateCandidate(string instrumentKey)
+        {
+            var last30 = await LoadLastNMinutes(instrumentKey, 30);
+            if (last30 == null || last30.Count == 0) return;
+
+            var dailyStock = await LoadDailyStock(instrumentKey, 400);
+            var dailyFuture = await LoadDailyFuture(instrumentKey, 400);
+
+            var cand = BuildCandidate(instrumentKey, last30, dailyStock, dailyFuture);
+
+            var existing = _candidates.FirstOrDefault(c => c.StockName == instrumentKey);
+            if (existing != null)
+            {
+                int idx = _candidates.IndexOf(existing);
+                _candidates[idx] = cand;
+            }
+            else
+            {
+                _candidates.Add(cand);
+            }
+
+            // sort high score on top
+            var sorted = _candidates.OrderByDescending(c => c.TotalScore).ToList();
+            _candidates.Clear();
+            foreach (var c in sorted) _candidates.Add(c);
+        }
+
+
+        //private async Task ReconnectWebSocket()
+        //{
+        //    await CleanupWebSocket(); // Use the cleanup method
+
+        //    try
+        //    {
+        //        webSocket = new ClientWebSocket
+        //        {
+        //            Options = {
+        //        KeepAliveInterval = TimeSpan.FromSeconds(30),
+        //        // Add any other options needed for your specific WebSocket server
+        //    }
+        //        };
+
+        //        var wsUrl = await GetWebSocketUrlAsync();
+        //        await webSocket.ConnectAsync(new Uri(wsUrl), _cts.Token);
+
+        //        // Small delay to ensure connection is stable
+        //        await Task.Delay(1000);
+
+        //        await SendSubscriptionAsync(instruments);
+
+        //        await Dispatcher.InvokeAsync(() =>
+        //        {
+        //            OutputTextBox.AppendText("✅ WebSocket reconnected successfully\n");
+        //            ConnectionStatus.Text = "Connected";
+        //            ConnectionStatus.Foreground = Brushes.Green;
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        await Dispatcher.InvokeAsync(() =>
+        //        {
+        //            OutputTextBox.AppendText($"❌ Reconnection failed: {ex.Message}\n");
+        //            ConnectionStatus.Text = "Failed";
+        //            ConnectionStatus.Foreground = Brushes.Red;
+        //        });
+        //        throw;
+        //    }
+        //}
+        private async void ConnectBtn_Click(object sender, RoutedEventArgs e)
+        {
+            await StartAsync();
+        }
+        #endregion
     }
 
-    public class SignalRow
+    #region --- Models -------------------------------------------------------------
+    public class EnhancedTradeCandidate
+    {
+        public string StockName { get; set; }
+        public string Sector { get; set; }
+        public double SpotPrice { get; set; }
+        public double FuturePrice { get; set; }
+        public string OIChange { get; set; }
+        public string VolumeStatus { get; set; }
+        public double VolumeRatio { get; set; }
+        public double StockCVD { get; set; }
+        public double FuturesCVD { get; set; }
+        public double RollingDelta { get; set; }
+        public string CVDStatus { get; set; }
+        public string FirstMinuteBreakout { get; set; }
+        public string FiveMinuteBreakout { get; set; }
+        public string VWAPStatus { get; set; }
+        public string OpenHighLow { get; set; }
+        public string Near52WeekHigh { get; set; }
+        public double DistanceFrom52WH { get; set; }
+        public int VolumeScore { get; set; }
+        public int CVDScore { get; set; }
+        public int BreakoutScore { get; set; }
+        public int TotalScore { get; set; }
+        public string SignalStrength { get; set; }
+        public string Support { get; set; }
+        public string Resistance { get; set; }
+        public int SupportHit { get; set; }
+        public int ResistanceHit { get; set; }
+    }
+
+    public class MinuteRow
     {
         public DateTime Time { get; set; }
-        public string Symbol { get; set; }
-        public double Ltp { get; set; }
-        public double VWAP { get; set; }
-        public long Cvd1m { get; set; }
-        public long Vol1m { get; set; }
-        public double RecentHigh { get; set; }
-        public double RecentLow { get; set; }
-        public string SignalType { get; set; }
-        public string Reason { get; set; }
-
-        public string SignalDirection
-        {
-            get
-            {
-                if (SignalType.Contains("BUY") || SignalType.Contains("LONG") || SignalType.Contains("ACCUMULATION"))
-                    return "BUY";
-                if (SignalType.Contains("SELL") || SignalType.Contains("SHORT") || SignalType.Contains("DISTRIBUTION"))
-                    return "SELL";
-                return "NEUTRAL";
-            }
-        }
+        public double Open { get; set; }
+        public double High { get; set; }
+        public double Low { get; set; }
+        public double Close { get; set; }
+        public long Volume { get; set; }
+        public double Delta { get; set; }  // Changed from long to double
+        public double RollingCvd { get; set; }
+        public double OI { get; set; }
     }
 
-    public enum Side { Buy, Sell, Unknown }
-
-    public class OrderBookSnapshot
+    public class RawTick
     {
-        public double BestBid { get; set; }
-        public int BestBidQty { get; set; }
-        public double BestAsk { get; set; }
-        public int BestAskQty { get; set; }
+        public DateTime Ts { get; set; }
+        public string InstrumentKey { get; set; }
+        public string InstrumentName { get; set; }
+        public double Price { get; set; }
+        public long Size { get; set; }
+        public double? BidPrice { get; set; }
+        public long? BidQty { get; set; }
+        public double? AskPrice { get; set; }
+        public long? AskQty { get; set; }
+        public double? OI { get; set; }
+        public double? Cvd { get; set; }
+        public double? OrderImbalance { get; set; }
     }
-
-    public class RollingStat
+    public class DailyStockRow
     {
-        private readonly Queue<Tuple<DateTime, double>> _q = new Queue<Tuple<DateTime, double>>();
-        private readonly TimeSpan _window;
-        private double _sum;
-
-        public RollingStat(TimeSpan window)
-        {
-            _window = window;
-        }
-
-        public void Add(DateTime t, double v)
-        {
-            _q.Enqueue(Tuple.Create(t, v));
-            _sum += v;
-
-            while (_q.Count > 0 && (t - _q.Peek().Item1) > _window)
-            {
-                _sum -= _q.Dequeue().Item2;
-            }
-        }
-
-        public double Sum { get { return _sum; } }
+        public DateTime DayDate { get; set; }
+        public double Open { get; set; }
+        public double High { get; set; }
+        public double Low { get; set; }
+        public double Close { get; set; }
+        public long Volume { get; set; }
+        public double Delivery { get; set; }
     }
 
-    public class InstrumentState
+    public class DailyFutureRow
     {
-        public string Key { get; private set; }
-        public InstrumentState(string key) { Key = key; }
-
-        public double? LastPrice { get; set; }
-        public int? LastQty { get; set; }
-        public DateTime? LastTradeTime { get; set; }
-        public OrderBookSnapshot Book { get; set; } = new OrderBookSnapshot();
-
-        public long Cvd { get; set; }
-        public RollingStat Cvd1m { get; private set; } = new RollingStat(TimeSpan.FromMinutes(1));
-        public RollingStat Vol1m { get; private set; } = new RollingStat(TimeSpan.FromMinutes(1));
-
-        private double _cumPV, _cumVol;
-        public double? VWAP { get { return _cumVol > 0 ? _cumPV / _cumVol : (double?)null; } }
-
-        private readonly Queue<Tuple<DateTime, double>> _price1m = new Queue<Tuple<DateTime, double>>();
-        public double RecentHigh { get; private set; }
-        public double RecentLow { get; private set; }
-
-        public int LastBidQty { get; set; }
-        public int LastAskQty { get; set; }
-        public int PullEvents { get; set; }
-        public int StackEvents { get; set; }
-
-        public void UpdateVWAP(DateTime t, double price, int qty)
-        {
-            _cumPV += price * qty;
-            _cumVol += qty;
-            Vol1m.Add(t, qty);
-        }
-
-        public void UpdatePriceMicro(DateTime t, double price)
-        {
-            _price1m.Enqueue(Tuple.Create(t, price));
-            while (_price1m.Count > 0 && (t - _price1m.Peek().Item1) > TimeSpan.FromMinutes(1))
-                _price1m.Dequeue();
-
-            if (_price1m.Count > 0)
-            {
-                double hi = double.MinValue, lo = double.MaxValue;
-                foreach (var tp in _price1m)
-                {
-                    if (tp.Item2 > hi) hi = tp.Item2;
-                    if (tp.Item2 < lo) lo = tp.Item2;
-                }
-                RecentHigh = hi;
-                RecentLow = lo;
-            }
-            else
-            {
-                RecentHigh = price;
-                RecentLow = price;
-            }
-        }
+        public DateTime DayDate { get; set; }
+        public double FutOpen { get; set; }
+        public double FutHigh { get; set; }
+        public double FutLow { get; set; }
+        public double FutClose { get; set; }
+        public long FutVolume { get; set; }
+        public long OpenInterest { get; set; }
     }
+    #endregion
 
-    public class OrderFlowEngine
+    #region --- TradeSignalCalculator ---------------------------------------------
+    public class TradeSignalCalculator
     {
-        private readonly ConcurrentDictionary<string, InstrumentState> _state =
-            new ConcurrentDictionary<string, InstrumentState>();
+        public int RollingWindowMinutes { get; set; } = 15;
+        public double VolumeMultiplierThreshold { get; set; } = 2.0;
+        public long CvdSpikeThreshold { get; set; } = 20000;
+        public double CvdSlopeThreshold { get; set; } = 2000;
 
-        private readonly Dictionary<string, string> _instrumentNameMap;
-        private readonly Dictionary<string, double> _lastCvd = new Dictionary<string, double>();
-
-        // Threshold configuration
-        private const double SpikeThresholdPercent = 0.1; // 10% of 1-min volume
-        private const double MinSpikeThreshold = 50; // Minimum absolute threshold
-        private const double VolumeThreshold = 1000; // Minimum volume to consider
-        private const double SignificantCvdThreshold = 100; // Absolute CVD threshold for important signals
-
-        public OrderFlowEngine(Dictionary<string, string> instrumentNameMap)
+        public (double rollingCvd, double slope, bool rawSpike) ComputeRollingCvdAndSpike(IEnumerable<MinuteRow> lastN)
         {
-            _instrumentNameMap = instrumentNameMap;
+            var list = lastN.OrderBy(m => m.Time).ToList();
+            if (!list.Any()) return (0, 0, false);
+            double rolling = list.Last().RollingCvd;
+            double slope = (list.Last().RollingCvd - list.First().RollingCvd) / Math.Max(1, (list.Count - 1));
+            bool rawSpike = list.Any(m => Math.Abs(m.Delta) >= CvdSpikeThreshold);
+            return (rolling, slope, rawSpike);
         }
 
-        public Action<string, DateTime, double, InstrumentState, string, string> OnSignal { get; set; }
-
-        public InstrumentState Get(string key)
+        public double ComputeVwap(IEnumerable<MinuteRow> bars)
         {
-            return _state.GetOrAdd(key, k => new InstrumentState(k));
+            double pvSum = 0; long qtySum = 0;
+            foreach (var b in bars)
+            {
+                double typical = (b.High + b.Low + b.Close) / 3.0;
+                pvSum += typical * b.Volume;
+                qtySum += b.Volume;
+            }
+            return qtySum == 0 ? 0 : pvSum / qtySum;
         }
 
-        private static Side ClassifyAggressor(double price, OrderBookSnapshot book, double? prevMid)
+        public double ComputeVolumeRatio(MinuteRow last, IEnumerable<MinuteRow> prev)
         {
-            if (book == null) return Side.Unknown;
-            if (price >= book.BestAsk) return Side.Buy;
-            if (price <= book.BestBid) return Side.Sell;
-
-            double mid = (book.BestBid + book.BestAsk) / 2.0;
-            double refMid = prevMid ?? mid;
-            return price >= refMid ? Side.Buy : Side.Sell;
+            var prevList = prev.ToList();
+            var avg = prevList.Any() ? prevList.Average(p => (double)p.Volume) : 0.0;
+            return avg == 0 ? 0 : (double)last.Volume / avg;
         }
 
-        public Tuple<bool, string> OnTick(string key, DateTime t, double ltp, int ltq,
-                                  double bestBid, int bidQty, double bestAsk, int askQty)
+        public string ClassifyOIChange(long todayOi, long prevOi, double priceChangePercent)
         {
-            var s = Get(key);
+            long deltaOi = todayOi - prevOi;
+            if (deltaOi > 0 && priceChangePercent > 0.1) return "Long Build";
+            if (deltaOi > 0 && priceChangePercent < -0.1) return "Short Build";
+            if (deltaOi < 0 && priceChangePercent > 0.1) return "Short Covering";
+            if (deltaOi < 0 && priceChangePercent < -0.1) return "Long Unwinding";
+            return "Neutral";
+        }
 
-            // keep prevMid BEFORE book update
-            double prevMid = (s.Book.BestBid + s.Book.BestAsk) / 2.0;
+        public string CheckOpenHighLow(MinuteRow firstMinuteOfDay)
+        {
+            if (firstMinuteOfDay == null) return "Normal";
+            if (Math.Abs(firstMinuteOfDay.Open - firstMinuteOfDay.High) < 1e-6) return "Open=High";
+            if (Math.Abs(firstMinuteOfDay.Open - firstMinuteOfDay.Low) < 1e-6) return "Open=Low";
+            return "Normal";
+        }
 
-            // -------------------- Update book --------------------
-            if (s.LastBidQty != 0 && s.LastAskQty != 0)
-            {
-                if (askQty < (int)(s.LastAskQty * 0.6)) s.PullEvents++;
-                if (bidQty > (int)(s.LastBidQty * 1.4)) s.StackEvents++;
-            }
-            s.Book.BestBid = bestBid; s.Book.BestBidQty = bidQty;
-            s.Book.BestAsk = bestAsk; s.Book.BestAskQty = askQty;
-            s.LastBidQty = bidQty; s.LastAskQty = askQty;
+        public (string near52, double distancePct) Check52Week(List<DailyStockRow> history, double currentPrice)
+        {
+            if (history == null || history.Count == 0) return ("None", 0);
+            var last365 = history.OrderByDescending(d => d.DayDate).Take(365).ToList();
+            double hi52 = last365.Max(d => d.High);
+            double lo52 = last365.Min(d => d.Low);
+            if (currentPrice >= hi52) return ("BreakHigh", 100.0 * (currentPrice - hi52) / hi52);
+            if (currentPrice <= lo52) return ("BreakLow", 100.0 * (lo52 - currentPrice) / lo52);
+            double dist = Math.Min(100.0 * (hi52 - currentPrice) / hi52, 100.0 * (currentPrice - lo52) / lo52);
+            return ("None", dist);
+        }
 
-            // -------------------- Trade detection --------------------
-            bool hasTrade =
-                (!s.LastTradeTime.HasValue || t > s.LastTradeTime.Value) &&
-                ltq > 0 &&
-                (!s.LastPrice.HasValue || ltp != s.LastPrice.Value || ltq != s.LastQty);
+        public (double support, int supportHits, double resistance, int resistanceHits) ComputeSupportResistance(List<DailyStockRow> history, double tolerancePct = 0.5)
+        {
+            var last90 = history.OrderByDescending(d => d.DayDate).Take(90).ToList();
+            if (!last90.Any()) return (0, 0, 0, 0);
+            var highs = last90.OrderByDescending(d => d.High).Take(3).Select(d => d.High).ToList();
+            var lows = last90.OrderBy(d => d.Low).Take(3).Select(d => d.Low).ToList();
+            double resistance = highs.Average();
+            double support = lows.Average();
+            int resHits = last90.Count(d => Math.Abs((d.Close - resistance) / resistance * 100.0) <= tolerancePct);
+            int supHits = last90.Count(d => Math.Abs((d.Close - support) / support * 100.0) <= tolerancePct);
+            return (support, supHits, resistance, resHits);
+        }
 
-            if (hasTrade)
-            {
-                var side = ClassifyAggressor(ltp, s.Book, prevMid);
-                int signedVol = side == Side.Buy ? ltq : (side == Side.Sell ? -ltq : 0);
+        public (int volumeScore, int cvdScore, int breakoutScore) ComputeScores(double volumeRatio, double rollingCvd, double cvdSlope, bool isFirstMinBreak, bool isFiveMinBreak)
+        {
+            int vScore = 0, cScore = 0, bScore = 0;
+            if (volumeRatio >= 2.0) vScore = 3;
+            else if (volumeRatio >= 1.5) vScore = 2;
+            else if (volumeRatio >= 1.2) vScore = 1;
 
-                s.Cvd += signedVol;
-                s.Cvd1m.Add(t, signedVol);
+            if (rollingCvd > 50000 && cvdSlope > 3000) cScore = 3;
+            else if (rollingCvd > 20000 && cvdSlope > 1000) cScore = 2;
+            else if (Math.Abs(rollingCvd) > 5000) cScore = 1;
 
-                s.UpdateVWAP(t, ltp, ltq);
-                s.UpdatePriceMicro(t, ltp);
+            if (isFirstMinBreak) bScore += 2;
+            if (isFiveMinBreak) bScore += 3;
+            return (vScore, cScore, bScore);
+        }
 
-                s.LastPrice = ltp;
-                s.LastQty = ltq;
-                s.LastTradeTime = t;
-            }
-            else
-            {
-                s.UpdatePriceMicro(t, ltp);
-                s.LastPrice = ltp;
-            }
+        public bool CheckFirstMinuteBreakout(List<MinuteRow> minutes)
+        {
+            if (minutes == null || minutes.Count < 2) return false;
+            var first = minutes.First();
+            return minutes.Skip(1).Take(4).Any(m => m.Close > first.High) || minutes.Skip(1).Take(4).Any(m => m.Close < first.Low);
+        }
 
-            // -------------------- CVD spike detection --------------------
-            bool fired = false;
-            string reason = "";
-            string type = "";
-
-            double currentCvd = s.Cvd1m.Sum;
-            double lastCvd = _lastCvd.TryGetValue(key, out var c) ? c : 0;
-            double delta = currentCvd - lastCvd;
-
-            // Use dynamic threshold based on volume
-            double avgVol = s.Vol1m.Sum;
-            double dynamicThreshold = Math.Max(MinSpikeThreshold, avgVol * SpikeThresholdPercent);
-
-            // Only check for spikes if we have sufficient volume
-            if (avgVol >= VolumeThreshold && Math.Abs(delta) >= dynamicThreshold)
-            {
-                fired = true;
-                type = "CVD_SPIKE";
-                reason = $"ΔCVD={delta:F0} (Threshold: {dynamicThreshold:F0}), TotalCVD={currentCvd:F0}, Vol1m={avgVol:F0}";
-            }
-
-            // Always update lastCvd to avoid duplicate spikes
-            _lastCvd[key] = currentCvd;
-
-            // -------------------- Other signal detection rules --------------------
-            var vwap = s.VWAP;
-            if (!fired && vwap.HasValue && s.Vol1m.Sum >= VolumeThreshold)
-            {
-                // Accumulation pattern detection
-                bool nearLow = s.RecentLow > 0 && ltp <= s.RecentLow * 1.002;
-                bool cvdUp = s.Cvd1m.Sum > Math.Max(SignificantCvdThreshold, s.Vol1m.Sum * 0.05);
-                bool flowUp = s.StackEvents > s.PullEvents;
-
-                if (nearLow && cvdUp && flowUp && ltp <= vwap.Value * 1.002)
-                {
-                    fired = true;
-                    type = "ACCUMULATION_LONG";
-                    reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, VWAP={vwap.Value:F2}";
-                }
-            }
-
-            if (!fired && s.RecentHigh > 0 && s.Vol1m.Sum >= VolumeThreshold)
-            {
-                // Breakout pattern detection
-                bool brokeHigh = ltp > s.RecentHigh * 1.0015;
-                bool cvdStrong = s.Cvd1m.Sum > Math.Max(SignificantCvdThreshold * 2, s.Vol1m.Sum * 0.08);
-                bool asksPulled = s.PullEvents > s.StackEvents;
-
-                if (brokeHigh && cvdStrong && asksPulled)
-                {
-                    fired = true;
-                    type = "BREAKOUT_LONG";
-                    reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, AskPull={s.PullEvents} BidStack={s.StackEvents}";
-                }
-            }
-
-            // -------------------- Extreme CVD values detection --------------------
-            if (!fired && Math.Abs(s.Cvd1m.Sum) >= SignificantCvdThreshold * 5 && s.Vol1m.Sum >= VolumeThreshold * 2)
-            {
-                fired = true;
-                type = s.Cvd1m.Sum > 0 ? "EXTREME_BUYING" : "EXTREME_SELLING";
-                reason = $"Extreme CVD={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}";
-            }
-
-            // decay counters
-            s.PullEvents = (int)(s.PullEvents * 0.7);
-            s.StackEvents = (int)(s.StackEvents * 0.7);
-
-            // -------------------- Emit Signal --------------------
-            //if (fired && OnSignal != null)
-            //{
-            //    string stockName = _instrumentNameMap.TryGetValue(key, out var name) ? name : key;
-            //    OnSignal(stockName, t, ltp, s, reason, type);
-            //}
-            if (fired && OnSignal != null)
-            {
-                string stockName = _instrumentNameMap.TryGetValue(key, out var name) ? name : key;
-                OnSignal(stockName, t, ltp, s, reason, type);
-                //Console.WriteLine($"Signal added: {stockName} {type} {reason}");
-            }
-            return Tuple.Create(fired, reason);
+        public bool CheckFiveMinuteBreakout(List<MinuteRow> minutes)
+        {
+            if (minutes == null || minutes.Count < 5) return false;
+            var first = minutes.First();
+            return minutes.Take(5).Any(m => m.High > first.High) || minutes.Take(5).Any(m => m.Low < first.Low);
         }
     }
-
-    //public class OrderFlowEngine
-    //{
-    //    private readonly ConcurrentDictionary<string, InstrumentState> _state =
-    //        new ConcurrentDictionary<string, InstrumentState>();
-
-    //    private readonly Dictionary<string, string> _instrumentNameMap;
-    //    private readonly Dictionary<string, double> _lastCvd = new Dictionary<string, double>();
-
-    //    private const double SpikeThreshold = 20000; // adjust for your liquidity
-
-    //    public OrderFlowEngine(Dictionary<string, string> instrumentNameMap)
-    //    {
-    //        _instrumentNameMap = instrumentNameMap;
-    //    }
-
-    //    public Action<string, DateTime, double, InstrumentState, string, string> OnSignal { get; set; }
-
-    //    public InstrumentState Get(string key)
-    //    {
-    //        return _state.GetOrAdd(key, k => new InstrumentState(k));
-    //    }
-
-    //    private static Side ClassifyAggressor(double price, OrderBookSnapshot book, double? prevMid)
-    //    {
-    //        if (book == null) return Side.Unknown;
-    //        if (price >= book.BestAsk) return Side.Buy;
-    //        if (price <= book.BestBid) return Side.Sell;
-
-    //        double mid = (book.BestBid + book.BestAsk) / 2.0;
-    //        double refMid = prevMid ?? mid;
-    //        return price >= refMid ? Side.Buy : Side.Sell;
-    //    }
-
-    //    public Tuple<bool, string> OnTick(string key, DateTime t, double ltp, int ltq,
-    //                              double bestBid, int bidQty, double bestAsk, int askQty)
-    //    {
-    //        var s = Get(key);
-
-    //        // keep prevMid BEFORE book update
-    //        double prevMid = (s.Book.BestBid + s.Book.BestAsk) / 2.0;
-
-    //        // -------------------- Update book --------------------
-    //        if (s.LastBidQty != 0 && s.LastAskQty != 0)
-    //        {
-    //            if (askQty < (int)(s.LastAskQty * 0.6)) s.PullEvents++;
-    //            if (bidQty > (int)(s.LastBidQty * 1.4)) s.StackEvents++;
-    //        }
-    //        s.Book.BestBid = bestBid; s.Book.BestBidQty = bidQty;
-    //        s.Book.BestAsk = bestAsk; s.Book.BestAskQty = askQty;
-    //        s.LastBidQty = bidQty; s.LastAskQty = askQty;
-
-    //        // -------------------- Trade detection --------------------
-    //        bool hasTrade =
-    //            (!s.LastTradeTime.HasValue || t > s.LastTradeTime.Value) &&
-    //            ltq > 0 &&
-    //            (!s.LastPrice.HasValue || ltp != s.LastPrice.Value || ltq != s.LastQty);
-
-    //        if (hasTrade)
-    //        {
-    //            var side = ClassifyAggressor(ltp, s.Book, prevMid);
-    //            int signedVol = side == Side.Buy ? ltq : (side == Side.Sell ? -ltq : 0);
-
-    //            s.Cvd += signedVol;
-    //            s.Cvd1m.Add(t, signedVol);
-
-    //            s.UpdateVWAP(t, ltp, ltq);
-    //            s.UpdatePriceMicro(t, ltp);
-
-    //            s.LastPrice = ltp;
-    //            s.LastQty = ltq;
-    //            s.LastTradeTime = t;
-    //        }
-    //        else
-    //        {
-    //            s.UpdatePriceMicro(t, ltp);
-    //            s.LastPrice = ltp;
-    //        }
-
-    //        // -------------------- CVD spike detection --------------------
-    //        bool fired = false;
-    //        string reason = "";
-    //        string type = "";
-
-            
-    //        double currentCvd = s.Cvd1m.Sum;
-    //        double lastCvd = _lastCvd.TryGetValue(key, out var c) ? c : 0;
-    //        double delta = currentCvd - lastCvd;
-
-    //        // Use 10% of last 1-minute volume as threshold
-    //        double avgVol = s.Vol1m.Sum; // total volume in last 1 min
-    //        double dynamicThreshold = Math.Max(50, avgVol * 0.1); // 10% of 1-min volume
-
-    //        if (Math.Abs(delta) >= dynamicThreshold)
-    //        {
-    //            fired = true;
-    //            type = "CVD_SPIKE";
-    //            reason = $"ΔCVD={delta:F0}, TotalCVD={currentCvd:F0}, Vol1m={s.Vol1m.Sum:F0}, Threshold={dynamicThreshold:F0}";
-    //        }
-
-    //        _lastCvd[key] = currentCvd;
-    //        // -------------------- Other rules (unchanged) --------------------
-    //        var vwap = s.VWAP;
-    //        if (!fired && vwap.HasValue && s.Vol1m.Sum > 0)
-    //        {
-    //            bool nearLow = s.RecentLow > 0 && ltp <= s.RecentLow * 1.002;
-    //            bool cvdUp = s.Cvd1m.Sum > Math.Max(50.0, s.Vol1m.Sum * 0.05);
-    //            bool flowUp = s.StackEvents > s.PullEvents;
-
-    //            if (nearLow && cvdUp && flowUp && ltp <= vwap.Value * 1.002)
-    //            {
-    //                fired = true;
-    //                type = "ACCUMULATION_LONG";
-    //                reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, VWAP={vwap.Value:F2}";
-    //            }
-    //        }
-
-    //        if (!fired && s.RecentHigh > 0)
-    //        {
-    //            bool brokeHigh = ltp > s.RecentHigh * 1.0015;
-    //            bool cvdStrong = s.Cvd1m.Sum > Math.Max(100.0, s.Vol1m.Sum * 0.08);
-    //            bool asksPulled = s.PullEvents > s.StackEvents;
-
-    //            if (brokeHigh && cvdStrong && asksPulled)
-    //            {
-    //                fired = true;
-    //                type = "BREAKOUT_LONG";
-    //                reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, AskPull={s.PullEvents} BidStack={s.StackEvents}";
-    //            }
-    //        }
-
-    //        // decay counters
-    //        s.PullEvents = (int)(s.PullEvents * 0.7);
-    //        s.StackEvents = (int)(s.StackEvents * 0.7);
-
-    //        // -------------------- Emit Signal --------------------
-    //        if (fired && OnSignal != null)
-    //        {
-    //            string stockName = _instrumentNameMap.TryGetValue(key, out var name) ? name : key;
-    //            OnSignal(stockName, t, ltp, s, reason, type);
-    //            //Console.WriteLine($"Signal added: {stockName} {type} {reason}");
-    //        }
-
-    //        return Tuple.Create(fired, reason);
-    //    }
-
-    //    #region old code on tick
-    //    //public Tuple<bool, string> OnTick(string key, DateTime t, double ltp, int ltq,
-    //    //                                  double bestBid, int bidQty, double bestAsk, int askQty)
-    //    //{
-    //    //    var s = Get(key);
-
-    //    //    // update book
-    //    //    if (s.LastBidQty != 0 && s.LastAskQty != 0)
-    //    //    {
-    //    //        if (askQty < (int)(s.LastAskQty * 0.6)) s.PullEvents++;
-    //    //        if (bidQty > (int)(s.LastBidQty * 1.4)) s.StackEvents++;
-    //    //    }
-    //    //    s.Book.BestBid = bestBid; s.Book.BestBidQty = bidQty;
-    //    //    s.Book.BestAsk = bestAsk; s.Book.BestAskQty = askQty;
-    //    //    s.LastBidQty = bidQty; s.LastAskQty = askQty;
-
-    //    //    // trade detection
-    //    //    bool hasTrade = !s.LastTradeTime.HasValue || t > s.LastTradeTime.Value ||
-    //    //                    !s.LastPrice.HasValue || ltp != s.LastPrice.Value ||
-    //    //                    !s.LastQty.HasValue || ltq != s.LastQty.Value;
-
-    //    //    if (hasTrade && ltq > 0)
-    //    //    {
-    //    //        double prevMid = (s.Book.BestBid + s.Book.BestAsk) / 2.0;
-    //    //        var side = ClassifyAggressor(ltp, s.Book, prevMid);
-
-    //    //        int signedVol = side == Side.Buy ? ltq : (side == Side.Sell ? -ltq : 0);
-    //    //        s.Cvd += signedVol;
-    //    //        s.Cvd1m.Add(t, signedVol);
-
-    //    //        s.UpdateVWAP(t, ltp, ltq);
-    //    //        s.UpdatePriceMicro(t, ltp);
-
-    //    //        s.LastPrice = ltp;
-    //    //        s.LastQty = ltq;
-    //    //        s.LastTradeTime = t;
-    //    //    }
-    //    //    else
-    //    //    {
-    //    //        s.UpdatePriceMicro(t, ltp);
-    //    //        s.LastPrice = ltp;
-    //    //    }
-
-    //    //    bool fired = false;
-    //    //    string reason = "";
-    //    //    string type = "";
-
-    //    //    // -------------------- Built-in CVD spike detection --------------------
-    //    //    double currentCvd = s.Cvd1m.Sum;
-    //    //    double lastCvd = _lastCvd.TryGetValue(key, out var c) ? c : 0;
-    //    //    double delta = currentCvd - lastCvd;
-
-    //    //    if (Math.Abs(delta) >= SpikeThreshold)
-    //    //    {
-    //    //        fired = true;
-    //    //        type = "CVD_SPIKE";
-    //    //        reason = $"ΔCVD={delta:F0}, TotalCVD={currentCvd:F0}, Vol1m={s.Vol1m.Sum:F0}";
-    //    //    }
-
-    //    //    _lastCvd[key] = currentCvd;
-
-    //    //    // -------------------- Other existing rules --------------------
-    //    //    var vwap = s.VWAP;
-    //    //    if (!fired && vwap.HasValue && s.Vol1m.Sum > 0)
-    //    //    {
-    //    //        bool nearLow = s.RecentLow > 0 && ltp <= s.RecentLow * 1.002;
-    //    //        bool cvdUp = s.Cvd1m.Sum > Math.Max(50.0, s.Vol1m.Sum * 0.05);
-    //    //        bool flowUp = s.StackEvents > s.PullEvents;
-
-    //    //        if (nearLow && cvdUp && flowUp && ltp <= vwap.Value * 1.002)
-    //    //        {
-    //    //            fired = true;
-    //    //            type = "ACCUMULATION_LONG";
-    //    //            reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, VWAP={vwap.Value:F2}";
-    //    //        }
-    //    //    }
-
-    //    //    if (!fired && s.RecentHigh > 0)
-    //    //    {
-    //    //        bool brokeHigh = ltp > s.RecentHigh * 1.0015;
-    //    //        bool cvdStrong = s.Cvd1m.Sum > Math.Max(100.0, s.Vol1m.Sum * 0.08);
-    //    //        bool asksPulled = s.PullEvents > s.StackEvents;
-
-    //    //        if (brokeHigh && cvdStrong && asksPulled)
-    //    //        {
-    //    //            fired = true;
-    //    //            type = "BREAKOUT_LONG";
-    //    //            reason = $"CVD1m={s.Cvd1m.Sum:F0}, Vol1m={s.Vol1m.Sum:F0}, AskPull>{s.PullEvents} BidStack={s.StackEvents}";
-    //    //        }
-    //    //    }
-
-    //    //    // decay counters
-    //    //    s.PullEvents = (int)(s.PullEvents * 0.7);
-    //    //    s.StackEvents = (int)(s.StackEvents * 0.7);
-
-    //    //    // -------------------- Emit Signal --------------------
-    //    //    if (fired && OnSignal != null)
-    //    //    {
-    //    //        string stockName = _instrumentNameMap.TryGetValue(key, out var name) ? name : key;
-    //    //        OnSignal(stockName, t, ltp, s, reason, type);
-    //    //    }
-
-    //    //    return Tuple.Create(fired, reason);
-    //    //}
-    //    #endregion
-
-    //}
-
-
-    //public class OrderFlowEngine
-    //{
-    //    private readonly ConcurrentDictionary<string, InstrumentState> _state =
-    //        new ConcurrentDictionary<string, InstrumentState>();
-    //    private readonly Dictionary<string, string> _instrumentNameMap;
-
-    //    public OrderFlowEngine(Dictionary<string, string> instrumentNameMap)
-    //    {
-    //        _instrumentNameMap = instrumentNameMap;
-    //    }
-
-    //    public InstrumentState Get(string key)
-    //    {
-    //        return _state.GetOrAdd(key, k => new InstrumentState(k));
-    //    }
-
-    //    public Action<string, DateTime, double, InstrumentState, string, string> OnSignal { get; set; }
-
-    //    private static Side ClassifyAggressor(double price, OrderBookSnapshot book, double? prevMid)
-    //    {
-    //        if (book == null) return Side.Unknown;
-    //        if (price >= book.BestAsk) return Side.Buy;
-    //        if (price <= book.BestBid) return Side.Sell;
-
-    //        double mid = (book.BestBid + book.BestAsk) / 2.0;
-    //        double refMid = prevMid.HasValue ? prevMid.Value : mid;
-    //        return price >= refMid ? Side.Buy : Side.Sell;
-    //    }
-
-    //    public Tuple<bool, string> OnTick(string key, DateTime t, double ltp, int ltq,
-    //                                      double bestBid, int bidQty, double bestAsk, int askQty)
-    //    {
-    //        var s = Get(key);
-
-    //        // Pull/Stack heuristic
-    //        if (s.LastBidQty != 0 && s.LastAskQty != 0)
-    //        {
-    //            if (askQty < (int)(s.LastAskQty * 0.6)) s.PullEvents++;
-    //            if (bidQty > (int)(s.LastBidQty * 1.4)) s.StackEvents++;
-    //        }
-    //        s.Book.BestBid = bestBid; s.Book.BestBidQty = bidQty;
-    //        s.Book.BestAsk = bestAsk; s.Book.BestAskQty = askQty;
-    //        s.LastBidQty = bidQty; s.LastAskQty = askQty;
-
-    //        bool hasTrade = !s.LastTradeTime.HasValue || t > s.LastTradeTime.Value ||
-    //                        !s.LastPrice.HasValue || ltp != s.LastPrice.Value ||
-    //                        !s.LastQty.HasValue || ltq != s.LastQty.Value;
-
-    //        if (hasTrade && ltq > 0)
-    //        {
-    //            double prevMid = (s.Book.BestBid + s.Book.BestAsk) / 2.0;
-    //            var side = ClassifyAggressor(ltp, s.Book, prevMid);
-
-    //            int signedVol = side == Side.Buy ? ltq : (side == Side.Sell ? -ltq : 0);
-    //            s.Cvd += signedVol;
-    //            s.Cvd1m.Add(t, signedVol);
-
-    //            s.UpdateVWAP(t, ltp, ltq);
-    //            s.UpdatePriceMicro(t, ltp);
-
-    //            s.LastPrice = ltp;
-    //            s.LastQty = ltq;
-    //            s.LastTradeTime = t;
-    //        }
-    //        else
-    //        {
-    //            s.UpdatePriceMicro(t, ltp);
-    //            s.LastPrice = ltp;
-    //        }
-
-    //        bool fired = false;
-    //        string reason = "";
-    //        string type = "";
-
-    //        var vwap = s.VWAP;
-    //        if (vwap.HasValue && s.Vol1m.Sum > 0)
-    //        {
-    //            bool nearLow = s.RecentLow > 0 && ltp <= s.RecentLow * 1.002; // within 0.2%
-    //            bool cvdUp = s.Cvd1m.Sum > Math.Max(50.0, s.Vol1m.Sum * 0.05);
-    //            bool flowUp = s.StackEvents > s.PullEvents;
-
-    //            if (nearLow && cvdUp && flowUp && ltp <= vwap.Value * 1.002)
-    //            {
-    //                fired = true;
-    //                type = "ACCUMULATION_LONG";
-    //                reason = string.Format("CVD1m={0:F0}, Vol1m={1:F0}, VWAP={2:F2}, Pull/Stack={3}/{4}",
-    //                    s.Cvd1m.Sum, s.Vol1m.Sum, vwap.Value, s.PullEvents, s.StackEvents);
-    //            }
-    //        }
-
-    //        if (!fired && s.RecentHigh > 0)
-    //        {
-    //            bool brokeHigh = ltp > s.RecentHigh * 1.0015;
-    //            bool cvdStrong = s.Cvd1m.Sum > Math.Max(100.0, s.Vol1m.Sum * 0.08);
-    //            bool asksPulled = s.PullEvents > s.StackEvents;
-
-    //            if (brokeHigh && cvdStrong && asksPulled)
-    //            {
-    //                fired = true;
-    //                type = "BREAKOUT_LONG";
-    //                reason = string.Format("CVD1m={0:F0}, Vol1m={1:F0}, AskPull>{2} BidStack={3}",
-    //                    s.Cvd1m.Sum, s.Vol1m.Sum, s.PullEvents, s.StackEvents);
-    //            }
-    //        }
-
-    //        // decay counters
-    //        s.PullEvents = (int)(s.PullEvents * 0.7);
-    //        s.StackEvents = (int)(s.StackEvents * 0.7);
-
-
-    //        if (fired && OnSignal != null)
-    //        {
-    //            string stockName = _instrumentNameMap.ContainsKey(key) ? _instrumentNameMap[key] : key;
-    //            OnSignal(stockName, t, ltp, s, reason, type);
-    //        }
-
-    //        if (fired && OnSignal != null)
-    //            OnSignal(key, t, ltp, s, reason, type);
-
-    //        return Tuple.Create(fired, reason);
-    //    }
-    //}
-
-
+    #endregion
 }
