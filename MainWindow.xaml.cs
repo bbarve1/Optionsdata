@@ -3,6 +3,7 @@ using Google.Protobuf;
 using LiveCharts.Wpf;
 using MongoDB.Bson;
 using MongoDB.Driver;
+using MongoDB.Driver.Core.Configuration;
 using Npgsql;
 using RestSharp;
 using SharpCompress.Common;
@@ -10,7 +11,9 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Data;
 using System.Data.SqlClient;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.WebSockets;
@@ -21,6 +24,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
@@ -30,6 +34,20 @@ namespace CVD
 {
     public partial class MainWindow : Window
     {
+        //private ScannerService _scannerService;
+        //private ObservableCollection<DiversionSignal> _diversion30MinSignals;
+        //private ObservableCollection<DiversionSignal> _diversion1HourSignals;
+        //private ObservableCollection<BigCvdTrade> _bigCvdTrades;
+        //private ObservableCollection<CvdSpikeSignal> _cvdSpikeSignals;
+
+        private EnhancedScannerService _scannerService;
+        private ObservableCollection<DiversionSignal> _diversion30MinSignals;
+        private ObservableCollection<DiversionSignal> _diversion1HourSignals;
+        private ObservableCollection<BigCvdTrade> _bigCvdTrades;
+        private ObservableCollection<CvdSpikeSignal> _cvdSpikeSignals;
+        private ObservableCollection<TrendFollowingSignal> _trendFollowingSignals;
+        private ObservableCollection<ScalpingOpportunity> _scalpingOpportunities;
+
         private DrawCharts chartHelper;
         private HighFrequencyTickProcessor _tickProcessor;
         // ------------- CONFIG -------------
@@ -37,7 +55,7 @@ namespace CVD
         private readonly string _sqlconnectionString = "Data Source=LAPTOP-3KVKG1RR\\SQLEXPRESS;Initial Catalog=DBSED3204;Integrated Security=True";
         // ------------- END CONFIG ---------
         private Dictionary<string, List<RawTick>> _tickBuffer = new Dictionary<string, List<RawTick>>();
-        private Dictionary<string, DateTime> _lastMinuteBar = new Dictionary<string, DateTime>();
+        //private Dictionary<string, DateTime> _lastMinuteBar = new Dictionary<string, DateTime>();
         private Dictionary<string, string> _instrumentNameMap = new Dictionary<string, string>();
         private ObservableCollection<EnhancedTradeCandidate> _candidates = new ObservableCollection<EnhancedTradeCandidate>();
         private ObservableCollection<MinuteRow> _details = new ObservableCollection<MinuteRow>();
@@ -50,24 +68,15 @@ namespace CVD
         private List<DailyStockRow> dailyStockRow = new List<DailyStockRow>();
         private List<DailyFutureRow> dailyFutureRow = new List<DailyFutureRow>();
         private string accessToken;
-        private MinuteBarProcessor _minuteBarProcessor;
         private readonly ConcurrentDictionary<string, double> _lastCvdCache = new ConcurrentDictionary<string, double>();
-
+        private DispatcherTimer _statusUpdateTimer;
         public MainWindow()
         {
             InitializeComponent();
             // Initialize collections first
             _tickBuffer = new Dictionary<string, List<RawTick>>();
-            _lastMinuteBar = new Dictionary<string, DateTime>();
 
-            // Initialize processors
             InitializeProcessors();
-
-            // Initialize watchdog timer
-            _watchdogTimer = new DispatcherTimer();
-            _watchdogTimer.Interval = TimeSpan.FromMinutes(2); // Check every 2 minutes
-            _watchdogTimer.Tick += WatchdogTimer_Tick;
-            _watchdogTimer.Start();
 
             // UI setup
             SummaryGrid.ItemsSource = _candidates;
@@ -75,7 +84,7 @@ namespace CVD
             TimeframeCombo.SelectedIndex = 0;
 
             // seed data and UI defaults
-            SeedSampleData();
+            //SeedSampleData();
             DbStatus.Text = "Not connected";
             ConnectionStatus.Text = "Disconnected";
             StatusText.Text = "Idle";
@@ -84,28 +93,279 @@ namespace CVD
 
             chartHelper = new DrawCharts(SymbolCombo, TimeframeCombo, DatePickerBox, PriceChart, CvdChart);
             chartHelper.LoadSymbols();
+            InitializeScanners();
+            PopulateEndTimeComboBox();
+            Getsymbollist();
+            Timecom.Items.Add(1);
+            Timecom.Items.Add(5);
+            Timecom.Items.Add(10);
+            Timecom.Items.Add(15);
+            Timecom.Items.Add(30);
+            Timecom.Items.Add(60);
+
+            //LoadInstruments();//temp combobox load
+            //InitializeScanners();
         }
+
+
+        #region --- Scanner Initialization & Execution ------------------------------
+        private void InitializeScanners()
+        {
+            _scannerService = new EnhancedScannerService(_connectionString);
+
+            _diversion30MinSignals = new ObservableCollection<DiversionSignal>();
+            _diversion1HourSignals = new ObservableCollection<DiversionSignal>();
+            _bigCvdTrades = new ObservableCollection<BigCvdTrade>();
+            _cvdSpikeSignals = new ObservableCollection<CvdSpikeSignal>();
+            _trendFollowingSignals = new ObservableCollection<TrendFollowingSignal>();
+            _scalpingOpportunities = new ObservableCollection<ScalpingOpportunity>();
+
+            // Set DataGrid sources
+            DiversionGrid30Min.ItemsSource = _diversion30MinSignals;
+            DiversionGrid1Hour.ItemsSource = _diversion1HourSignals;
+            BigCvdGrid.ItemsSource = _bigCvdTrades;
+            CvdSpikeGrid.ItemsSource = _cvdSpikeSignals;
+            TrendFollowingGrid.ItemsSource = _trendFollowingSignals;
+            DataGridCVD.ItemsSource = _scalpingOpportunities;
+        }
+
+        private async void ScanSignals_Click(object sender, RoutedEventArgs e)
+        {
+            await RunScanners();
+        }
+
+        private DateTime startIST = new DateTime(2025, 11, 12, 9, 15, 0);
+        private DateTime endIST = new DateTime(2025, 11, 12, 9, 15, 0);
+        private async Task RunScanners()
+        {
+            List<string> Newinstruments = new List<string>();
+            _scannerService = new EnhancedScannerService(_connectionString);
+
+            try
+            {
+                StatusText.Text = "Scanning...";
+                OutputTextBox.AppendText($"Starting scanner at {DateTime.Now:HH:mm:ss}\n");
+
+                using (var con = new NpgsqlConnection(_connectionString))
+                {
+                    con.Open();
+                    var cmd = new NpgsqlCommand("SELECT DISTINCT instrument_name FROM raw_ticks ORDER BY instrument_name;", con);
+                    var reader = cmd.ExecuteReader();
+                    while (reader.Read())
+                        Newinstruments.Add(reader.GetString(0));
+                }
+
+                var instruments = Newinstruments.Select(c => c).ToList();
+                if (!instruments.Any())
+                {
+                    OutputTextBox.AppendText("No instruments to scan. Please load candidates first.\n");
+                    return;
+                }
+
+                OutputTextBox.AppendText($"Scanning {instruments.Count} instruments...\n");
+
+                var selectedDate = EndDatePicker.SelectedDate.Value;
+                var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+
+                endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                      selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+
+                // Run all scanners through the service
+                var results = await _scannerService.RunAllScanners(instruments, startIST, endIST);
+
+                if (results.Success)
+                {
+                    // Update UI with results
+                    UpdateScannerGrid(_diversion30MinSignals, results.Diversion30Min);
+                    UpdateScannerGrid(_diversion1HourSignals, results.Diversion1Hour);
+                    UpdateScannerGrid(_bigCvdTrades, results.BigCvdTrades);
+                    UpdateScannerGrid(_cvdSpikeSignals, results.CvdSpikes);
+                    UpdateScannerGrid(_trendFollowingSignals, results.TrendFollowingSignals);
+                    UpdateScannerGrid(_scalpingOpportunities, results.ScalpingOpportunities);
+
+                    StatusText.Text = $"Scan complete - {DateTime.Now:HH:mm:ss}";
+                    OutputTextBox.AppendText($"Scan completed. Found:\n");
+                    OutputTextBox.AppendText($"- {results.Diversion30Min.Count} 30min diversions\n");
+                    OutputTextBox.AppendText($"- {results.Diversion1Hour.Count} 1hr diversions\n");
+                    OutputTextBox.AppendText($"- {results.BigCvdTrades.Count} big CVD trades\n");
+                    OutputTextBox.AppendText($"- {results.CvdSpikes.Count} CVD spikes\n");
+                    OutputTextBox.AppendText($"- {results.TrendFollowingSignals.Count} trend following signals\n");
+                    OutputTextBox.AppendText($"- {results.ScalpingOpportunities.Count} scalping opportunities\n");
+                }
+                else
+                {
+                    StatusText.Text = "Scan failed";
+                    OutputTextBox.AppendText($"Scanner error: {results.ErrorMessage}\n");
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = "Scan failed";
+                OutputTextBox.AppendText($"Scanner error: {ex.Message}\n");
+            }
+        }
+
+        private void UpdateScannerGrid<T>(ObservableCollection<T> collection, List<T> newItems) where T : class
+        {
+            if (collection == null)
+            {
+                Console.WriteLine("Error: Collection is null in UpdateScannerGrid");
+                return;
+            }
+
+            if (newItems == null)
+            {
+                newItems = new List<T>();
+            }
+
+            try
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    collection.Clear();
+                    foreach (var item in newItems)
+                    {
+                        collection.Add(item);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating scanner grid: {ex.Message}");
+            }
+        }
+
+        // Helper method for TakeLast compatibility
+        private static List<T> TakeLast<T>(List<T> source, int count)
+        {
+            if (source == null || count <= 0)
+                return new List<T>();
+
+            if (count >= source.Count)
+                return source.ToList();
+
+            return source.Skip(source.Count - count).ToList();
+        }
+        #endregion
+
+
         private async void LoadChart_Click(object sender, RoutedEventArgs e)
         {
             await chartHelper.LoadChartAsync();
         }
 
-        private async void WatchdogTimer_Tick(object sender, EventArgs e)
-        {
-            // If no messages received in 5 minutes but WebSocket appears connected, force reconnect
-            if (webSocket?.State == WebSocketState.Open && (DateTime.Now - _lastMessageTime).TotalMinutes >= 5)
-            {
-                await Dispatcher.InvokeAsync(() =>
-                {
-                    OutputTextBox.AppendText("🕵️ WATCHDOG: No messages in 5 minutes. Force reconnecting...\n");
-                });
+        #region --- Scanner Initialization & Execution ------------------------------
+        // private void InitializeScanners()
+        // {
+        //     _scannerService = new ScannerService(_connectionString);
 
-                await ReconnectWebSocket();
-            }
+        //     _diversion30MinSignals = new ObservableCollection<DiversionSignal>();
+        //     _diversion1HourSignals = new ObservableCollection<DiversionSignal>();
+        //     _bigCvdTrades = new ObservableCollection<BigCvdTrade>();
+        //     _cvdSpikeSignals = new ObservableCollection<CvdSpikeSignal>();
 
-            _lastMessageTime = DateTime.Now; // Update timer
-        }
-        #region minutebar processor
+        //     // Set DataGrid sources
+        //     DiversionGrid30Min.ItemsSource = _diversion30MinSignals;
+        //     DiversionGrid1Hour.ItemsSource = _diversion1HourSignals;
+        //     BigCvdGrid.ItemsSource = _bigCvdTrades;
+        //     CvdSpikeGrid.ItemsSource = _cvdSpikeSignals;
+        // }
+
+        // private async void ScanSignals_Click(object sender, RoutedEventArgs e)
+        // {
+        //     await RunScanners();
+        // }
+
+        // private async Task RunScanners()
+        // {
+        //     List<string> Newinstruments = new List<string>();
+        //     _scannerService = new ScannerService(_connectionString);
+        //     try
+        //     {
+        //         StatusText.Text = "Scanning...";
+        //         OutputTextBox.AppendText($"Starting scanner at {DateTime.Now:HH:mm:ss}\n");
+        //         using (var con = new NpgsqlConnection(_connectionString))
+        //         {
+        //             con.Open();
+        //             var cmd = new NpgsqlCommand("SELECT DISTINCT instrument_name FROM raw_ticks ORDER BY instrument_name;", con);
+        //             var reader = cmd.ExecuteReader();
+        //             while (reader.Read())
+        //                 Newinstruments.Add(reader.GetString(0));
+        //         }
+        //         //_candidates
+        //         var instruments = Newinstruments.Select(c => c).ToList();
+        //         if (!instruments.Any())
+        //         {
+        //             OutputTextBox.AppendText("No instruments to scan. Please load candidates first.\n");
+        //             return;
+        //         }
+
+        //         OutputTextBox.AppendText($"Scanning {instruments.Count} instruments...\n");
+
+        //         // Run all scanners through the service
+        //         var results = await _scannerService.RunAllScanners(instruments);
+
+        //         if (results.Success)
+        //         {
+        //             // Update UI with results
+        //             UpdateScannerGrid(_diversion30MinSignals, results.Diversion30Min);
+        //             UpdateScannerGrid(_diversion1HourSignals, results.Diversion1Hour);
+        //             UpdateScannerGrid(_bigCvdTrades, results.BigCvdTrades);
+        //             UpdateScannerGrid(_cvdSpikeSignals, results.CvdSpikes);
+
+        //             StatusText.Text = $"Scan complete - {DateTime.Now:HH:mm:ss}";
+        //             OutputTextBox.AppendText($"Scan completed. Found:\n");
+        //             OutputTextBox.AppendText($"- {results.Diversion30Min.Count} 30min diversions\n");
+        //             OutputTextBox.AppendText($"- {results.Diversion1Hour.Count} 1hr diversions\n");
+        //             OutputTextBox.AppendText($"- {results.BigCvdTrades.Count} big CVD trades\n");
+        //             OutputTextBox.AppendText($"- {results.CvdSpikes.Count} CVD spikes\n");
+        //         }
+        //         else
+        //         {
+        //             StatusText.Text = "Scan failed";
+        //             OutputTextBox.AppendText($"Scanner error: {results.ErrorMessage}\n");
+        //         }
+        //     }
+        //     catch (Exception ex)
+        //     {
+        //         StatusText.Text = "Scan failed";
+        //         OutputTextBox.AppendText($"Scanner error: {ex.Message}\n");
+        //     }
+        // }
+
+        //private void UpdateScannerGrid<T>(ObservableCollection<T> collection, List<T> newItems) where T : class
+        // {
+        //     if (collection == null)
+        //     {
+        //         // Log the error and return early
+        //         Console.WriteLine("Error: Collection is null in UpdateScannerGrid");
+        //         return;
+        //     }
+
+        //     if (newItems == null)
+        //     {
+        //         newItems = new List<T>();
+        //     }
+
+        //     try
+        //     {
+        //         Dispatcher.Invoke(() =>
+        //         {
+        //             collection.Clear();
+        //             foreach (var item in newItems)
+        //             {
+        //                 collection.Add(item);
+        //             }
+        //         });
+        //     }
+        //     catch (Exception ex)
+        //     {
+        //         Console.WriteLine($"Error updating scanner grid: {ex.Message}");
+        //     }
+        // }
+
+        #endregion
+
         private void InitializeProcessors()
         {
             // Initialize tick processor
@@ -115,12 +375,7 @@ namespace CVD
                 batchSize: 500,
                 maxQueueSize: 10000);
 
-            // Initialize minute bar processor
-            _minuteBarProcessor = new MinuteBarProcessor(_connectionString);
 
-            // Subscribe to events
-            _tickProcessor.OnLogMessage += OnTickProcessorLog;
-            _minuteBarProcessor.OnLogMessage += OnMinuteBarProcessorLog;
 
             // Start status update timer (only once)
             _statusUpdateTimer = new DispatcherTimer();
@@ -128,131 +383,8 @@ namespace CVD
             _statusUpdateTimer.Tick += UpdateStatusPanel;
             _statusUpdateTimer.Start();
         }
-        private void OnMinuteBarProcessorLog(string message)
-        {
-            Dispatcher.Invoke(() =>
-            {
-                // Add to insertion log with [MINUTE] prefix
-                var currentText = InsertionLog.Text;
-                if (currentText.Length > 1000)
-                {
-                    currentText = string.Join(Environment.NewLine,
-                        currentText.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries)
-                                  .Reverse()
-                                  .Take(20)
-                                  .Reverse());
-                }
-
-                InsertionLog.Text = currentText + Environment.NewLine + message;
-
-                var scrollViewer = GetChildOfType<ScrollViewer>(InsertionLog);
-                scrollViewer?.ScrollToBottom();
-            });
-        }
-
-        // Update your existing methods
-        private async Task AddTickAndAggregate(RawTick tick)
-        {
-            if (!_tickBuffer.ContainsKey(tick.InstrumentKey))
-                _tickBuffer[tick.InstrumentKey] = new List<RawTick>();
-            _tickBuffer[tick.InstrumentKey].Add(tick);
-
-            var currentMinute = new DateTime(tick.Ts.Year, tick.Ts.Month, tick.Ts.Day, tick.Ts.Hour, tick.Ts.Minute, 0);
-            if (!_lastMinuteBar.ContainsKey(tick.InstrumentKey))
-                _lastMinuteBar[tick.InstrumentKey] = currentMinute;
-
-            // Check if buffer crossed into next minute
-            if (currentMinute > _lastMinuteBar[tick.InstrumentKey])
-            {
-                var ticks = _tickBuffer[tick.InstrumentKey];
-                var bar = AggregateToMinute(ticks);
-                if (bar != null)
-                {
-                    await _minuteBarProcessor.StoreMinuteBarAsync(bar, tick.InstrumentKey);
-                    // RecalculateCandidate(tick.InstrumentKey);
-                }
-
-                _tickBuffer[tick.InstrumentKey].Clear();
-                _lastMinuteBar[tick.InstrumentKey] = currentMinute;
-            }
-        }
-
-        private MinuteRow AggregateToMinute(List<RawTick> ticks)
-        {
-            if (ticks == null || ticks.Count == 0) return null;
-
-            var ordered = ticks.OrderBy(t => t.Ts).ToList();
-            string instrumentKey = ordered.First().InstrumentKey;
-            double open = ordered.First().Price;
-            double close = ordered.Last().Price;
-            double high = ordered.Max(t => t.Price);
-            double low = ordered.Min(t => t.Price);
-            long volume = ordered.Sum(t => t.Size);
-            long delta = (long)ordered.Sum(t => t.Cvd ?? 0);
-
-            // Get last CVD from minute bar processor cache
-            double lastCvd = _minuteBarProcessor.GetLastCVD(instrumentKey);
-            double rolling = lastCvd + delta;
-
-            var minuteRow = new MinuteRow
-            {
-                Time = new DateTime(ordered.First().Ts.Year, ordered.First().Ts.Month, ordered.First().Ts.Day, ordered.First().Ts.Hour, ordered.First().Ts.Minute, 0),
-                Open = open,
-                High = high,
-                Low = low,
-                Close = close,
-                Volume = volume,
-                Delta = delta,
-                RollingCvd = rolling,
-                OI = ordered.Last().OI ?? 0
-            };
-
-            // Update cache in minute bar processor
-            _minuteBarProcessor.UpdateCvd(instrumentKey, rolling);
-
-            return minuteRow;
-        }
-
-        // Update disposal
-        //protected override void OnClosed(EventArgs e)
-        //{
-        //    _statusUpdateTimer?.Stop();
-        //    _tickProcessor?.Dispose();
-        //    _minuteBarProcessor?.Dispose();
-        //    base.OnClosed(e);
-        //} 
-        #endregion
 
         #region get count of rows
-        // Add these fields to MainWindow class
-        private DispatcherTimer _statusUpdateTimer;
-
-        // Initialize in constructor or loaded event
-
-
-        private void OnTickProcessorLog(string message)
-        {
-            // Update UI thread safely
-            Dispatcher.Invoke(() =>
-            {
-                // Add to insertion log
-                var currentText = InsertionLog.Text;
-                if (currentText.Length > 1000) // Keep last ~20 lines
-                {
-                    currentText = string.Join(Environment.NewLine,
-                        currentText.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries)
-                                  .Reverse()
-                                  .Take(20)
-                                  .Reverse());
-                }
-
-                InsertionLog.Text = currentText + Environment.NewLine + message;
-
-                // Auto-scroll to bottom
-                var scrollViewer = GetChildOfType<ScrollViewer>(InsertionLog);
-                scrollViewer?.ScrollToBottom();
-            });
-        }
 
         private void UpdateStatusPanel(object sender, EventArgs e)
         {
@@ -279,32 +411,13 @@ namespace CVD
                     }
                 }
 
-                // Update minute bar processor stats
-                if (_minuteBarProcessor != null)
-                {
-                    var minuteStats = _minuteBarProcessor.GetPerformanceStats();
-                    BatchCount.Text = minuteStats.totalBatches.ToString("N0"); // Show minute bar batches
-
-                    // Update status if minute bars are processing
-                    if (minuteStats.queueSize > 0)
-                    {
-                        InsertionStatus.Text = "Processing Minute Bars...";
-                        InsertionStatus.Foreground = Brushes.Cyan;
-                    }
-                }
 
                 // If both are idle
-                if ((_tickProcessor?.GetPerformanceStats().queueSize ?? 0) == 0 &&
-                    (_minuteBarProcessor?.GetPerformanceStats().queueSize ?? 0) == 0)
-                {
-                    InsertionStatus.Text = "Idle";
-                    InsertionStatus.Foreground = Brushes.Yellow;
-                }
 
                 // Update main status
                 var totalTicks = _tickProcessor?.GetPerformanceStats().totalTicks ?? 0;
-                var totalBatches = _minuteBarProcessor?.GetPerformanceStats().totalBatches ?? 0;
-                StatusText.Text = $"Ticks: {totalTicks:N0} | Minute Bars: {totalBatches:N0}";
+
+                StatusText.Text = $"Ticks: {totalTicks:N0}";
             });
         }
 
@@ -322,58 +435,7 @@ namespace CVD
             return null;
         }
 
-        // Don't forget to dispose
-        protected override void OnClosed(EventArgs e)
-        {
-            _statusUpdateTimer?.Stop();
-            _tickProcessor?.Dispose();
-            _minuteBarProcessor?.Dispose();
-            base.OnClosed(e); // Only call this once
-        }
         #endregion
-        //private void InitializeTickProcessor()
-        //{
-        //    _tickProcessor = new HighFrequencyTickProcessor(
-        //    connectionString: _connectionString,
-        //    useBulkInsert: true,
-        //    batchSize: 500,
-        //    maxQueueSize: 10000);
-
-        //    _tickProcessor = new HighFrequencyTickProcessor(_connectionString);
-        //    _tickProcessor.OnLogMessage += OnTickProcessorLog;
-
-        //    // Start status update timer
-        //    _statusUpdateTimer = new DispatcherTimer();
-        //    _statusUpdateTimer.Interval = TimeSpan.FromMilliseconds(500);
-        //    _statusUpdateTimer.Tick += UpdateStatusPanel;
-        //    _statusUpdateTimer.Start();
-
-        //    _minuteBarProcessor = new MinuteBarProcessor(_connectionString);
-        //    _tickBuffer = new Dictionary<string, List<RawTick>>();
-        //    _lastMinuteBar = new Dictionary<string, DateTime>();
-
-        //    // Subscribe to events
-        //    _tickProcessor.OnLogMessage += OnTickProcessorLog;
-        //    _minuteBarProcessor.OnLogMessage += OnMinuteBarProcessorLog;
-
-
-
-        //}
-        public void ClearCvdCache()
-        {
-            _lastCvdCache.Clear();
-        }
-
-        private double GetLastCVD(string key)
-        {
-            return _lastCvdCache.TryGetValue(key, out double lastCvd) ? lastCvd : 0;
-        }
-
-        private void UpdateCvd(string key, double rollingCvd)
-        {
-            _lastCvdCache.AddOrUpdate(key, rollingCvd, (k, oldValue) => rollingCvd);
-        }
-
 
         public async Task InitializeCvdCache()
         {
@@ -398,95 +460,17 @@ namespace CVD
             }
         }
 
-        private async Task EnsureTableExists()
-        {
-            Console.WriteLine("Starting EnsureTableExists...");
 
-            // Simple version without TimeScaleDB features
-            const string sql = @"
-        -- Create raw_ticks table
-        CREATE TABLE IF NOT EXISTS raw_ticks (
-            ts TIMESTAMPTZ NOT NULL,
-            instrument_key TEXT NOT NULL,
-            instrument_name TEXT,
-            price DOUBLE PRECISION NOT NULL,
-            size BIGINT NOT NULL,
-            bid_price DOUBLE PRECISION,
-            bid_qty BIGINT,
-            ask_price DOUBLE PRECISION,
-            ask_qty BIGINT,
-            oi DOUBLE PRECISION,
-            cvd DOUBLE PRECISION,
-            order_imbalance DOUBLE PRECISION,
-            instrument_type TEXT NOT NULL DEFAULT 'STOCK',
-            source TEXT NOT NULL DEFAULT 'websocket'
-        );
-
-        -- Create minute_bars table
-        CREATE TABLE IF NOT EXISTS minute_bars (
-            ts TIMESTAMPTZ NOT NULL,
-            instrument_key TEXT NOT NULL,
-            open DOUBLE PRECISION NOT NULL,
-            high DOUBLE PRECISION NOT NULL,
-            low DOUBLE PRECISION NOT NULL,
-            close DOUBLE PRECISION NOT NULL,
-            volume BIGINT NOT NULL,
-            delta DOUBLE PRECISION,
-            rolling_cvd DOUBLE PRECISION,
-            oi DOUBLE PRECISION
-        );
-
-        -- Create stock_data table
-        CREATE TABLE IF NOT EXISTS stock_data (
-            timestamp TIMESTAMPTZ NOT NULL,
-            instrument_key TEXT NOT NULL,
-            instrument_name TEXT NOT NULL,
-            price DOUBLE PRECISION NOT NULL,
-            volume BIGINT NOT NULL,
-            oi DOUBLE PRECISION,
-            cvd DOUBLE PRECISION,
-            instrument_type TEXT
-        );
-
-        -- Create basic indexes
-        CREATE INDEX IF NOT EXISTS idx_raw_ticks_ts ON raw_ticks (ts);
-        CREATE INDEX IF NOT EXISTS idx_raw_ticks_instrument ON raw_ticks (instrument_key);
-        CREATE INDEX IF NOT EXISTS idx_minute_bars_ts ON minute_bars (ts);
-        CREATE INDEX IF NOT EXISTS idx_minute_bars_instrument ON minute_bars (instrument_key);
-        CREATE INDEX IF NOT EXISTS idx_stock_data_ts ON stock_data (timestamp);
-        CREATE INDEX IF NOT EXISTS idx_stock_data_instrument ON stock_data (instrument_key);
-    ";
-
-            try
-            {
-                Console.WriteLine("Opening database connection...");
-                var connection = new NpgsqlConnection(_connectionString);
-                await connection.OpenAsync();
-                Console.WriteLine("Database connection opened successfully.");
-
-                var cmd = new NpgsqlCommand(sql, connection);
-                cmd.CommandTimeout = 300; // 5 minutes timeout
-
-                Console.WriteLine("Executing SQL commands...");
-                await cmd.ExecuteNonQueryAsync();
-                Console.WriteLine("All tables created successfully!");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error: {ex.Message}");
-                throw;
-            }
-        }
         #region --- Sample / DB load ------------------------------------------------
-        private void SeedSampleData()
-        {
-            _candidates.Clear();
-            _candidates.Add(new EnhancedTradeCandidate { StockName = "INFY", SpotPrice = 0.82, FuturePrice = 0.75, VolumeStatus = "2.1x", StockCVD = 145000, RollingDelta = 18000, CVDStatus = "Rising", OpenHighLow = "Normal", VWAPStatus = "Above", TotalScore = 9, SignalStrength = "Strong" });
-            _candidates.Add(new EnhancedTradeCandidate { StockName = "HDFCBANK", SpotPrice = -0.42, FuturePrice = -0.5, VolumeStatus = "1.8x", StockCVD = -95000, RollingDelta = -16000, CVDStatus = "Falling", OpenHighLow = "Open=High", VWAPStatus = "Below", TotalScore = 8, SignalStrength = "Strong" });
-            _candidates.Add(new EnhancedTradeCandidate { StockName = "TCS", SpotPrice = 0.12, FuturePrice = 0.1, VolumeStatus = "1.0x", StockCVD = 12000, RollingDelta = 1000, CVDStatus = "Flat", OpenHighLow = "Open=Low", VWAPStatus = "Below", TotalScore = 3, SignalStrength = "Weak" });
+        //private void SeedSampleData()
+        //{
+        //    _candidates.Clear();
+        //    _candidates.Add(new EnhancedTradeCandidate { StockName = "INFY", SpotPrice = 0.82, FuturePrice = 0.75, VolumeStatus = "2.1x", StockCVD = 145000, RollingDelta = 18000, CVDStatus = "Rising", OpenHighLow = "Normal", VWAPStatus = "Above", TotalScore = 9, SignalStrength = "Strong" });
+        //    _candidates.Add(new EnhancedTradeCandidate { StockName = "HDFCBANK", SpotPrice = -0.42, FuturePrice = -0.5, VolumeStatus = "1.8x", StockCVD = -95000, RollingDelta = -16000, CVDStatus = "Falling", OpenHighLow = "Open=High", VWAPStatus = "Below", TotalScore = 8, SignalStrength = "Strong" });
+        //    _candidates.Add(new EnhancedTradeCandidate { StockName = "TCS", SpotPrice = 0.12, FuturePrice = 0.1, VolumeStatus = "1.0x", StockCVD = 12000, RollingDelta = 1000, CVDStatus = "Flat", OpenHighLow = "Open=Low", VWAPStatus = "Below", TotalScore = 3, SignalStrength = "Weak" });
 
-            RefreshSort();
-        }
+        //    RefreshSort();
+        //}
 
         private void RefreshSort()
         {
@@ -495,53 +479,8 @@ namespace CVD
             foreach (var s in sorted) _candidates.Add(s);
         }
 
-        private async void RefreshButton_Click(object sender, RoutedEventArgs e)
-        {
-            await LoadCandidatesFromDb();
-        }
 
-        private async Task LoadCandidatesFromDb()
-        {
-            try
-            {
-                var conn = new NpgsqlConnection(_connectionString);
-                await conn.OpenAsync();
-                DbStatus.Text = "Connected";
-                DbStatus.Foreground = Brushes.LightGreen;
 
-                // TODO: replace with query to get instrument list or use your instrument lists
-                var symbols = new List<string> { "INFY", "HDFCBANK", "TCS" };
-
-                var newList = new List<EnhancedTradeCandidate>();
-                foreach (var sym in symbols)
-                {
-                    var lastBars = await LoadLastNMinutes(sym, 30);
-                    if (lastBars == null || lastBars.Count == 0) continue;
-                    var dailyStock = await LoadDailyStock(sym, 400);
-                    var dailyFuture = await LoadDailyFuture(sym, 400);
-                    var candidate = BuildCandidate(sym, lastBars, dailyStock, dailyFuture);
-                    newList.Add(candidate);
-
-                }
-                SymbolCombo.ItemsSource = newList.ToList();
-                _candidates.Clear();
-                foreach (var c in newList.OrderByDescending(x => x.TotalScore)) _candidates.Add(c);
-
-                SymbolCombo.ItemsSource = _candidates.Select(x => x.StockName).ToList();
-                if (SymbolCombo.Items.Count > 0) SymbolCombo.SelectedIndex = 0;
-            }
-            catch (Exception ex)
-            {
-                DbStatus.Text = "DB Error";
-                DbStatus.Foreground = Brushes.Orange;
-                MessageBox.Show("DB load error: " + ex.Message);
-            }
-        }
-
-        private async void LoadCandidatesFromDb_Click(object sender, RoutedEventArgs e)
-        {
-            await LoadCandidatesFromDb();
-        }
 
         private void ApplyFilter_Click(object sender, RoutedEventArgs e)
         {
@@ -638,55 +577,6 @@ namespace CVD
             return list;
         }
 
-        private async Task StoreRawTickAsync(RawTick tick)
-        {
-            const string sql = @"INSERT INTO raw_ticks (ts, instrument_key, instrument_name, price, size, bid_price, bid_qty, ask_price, ask_qty, oi, cvd, order_imbalance, instrument_type, source)
-VALUES (@ts, @instrumentKey, @instrumentName, @price, @size, @bidPrice, @bidQty, @askPrice, @askQty, @oi, @cvd, @orderImbalance, @instrumentType, @source);";
-
-            using (var conn = new NpgsqlConnection(_connectionString))
-            {
-                await conn.OpenAsync();
-
-                using (var cmd = new NpgsqlCommand(sql, conn))
-                {
-                    cmd.Parameters.AddWithValue("ts", tick.Ts);
-                    cmd.Parameters.AddWithValue("instrumentKey", tick.InstrumentKey);
-                    cmd.Parameters.AddWithValue("instrumentName", tick.InstrumentName ?? (object)DBNull.Value);
-                    cmd.Parameters.AddWithValue("price", tick.Price);
-                    cmd.Parameters.AddWithValue("size", tick.Size);
-                    cmd.Parameters.AddWithValue("bidPrice", tick.BidPrice ?? (object)DBNull.Value);
-                    cmd.Parameters.AddWithValue("bidQty", tick.BidQty ?? (object)DBNull.Value);
-                    cmd.Parameters.AddWithValue("askPrice", tick.AskPrice ?? (object)DBNull.Value);
-                    cmd.Parameters.AddWithValue("askQty", tick.AskQty ?? (object)DBNull.Value);
-                    cmd.Parameters.AddWithValue("oi", tick.OI ?? (object)DBNull.Value);
-                    cmd.Parameters.AddWithValue("cvd", tick.Cvd ?? (object)DBNull.Value);
-                    cmd.Parameters.AddWithValue("orderImbalance", tick.OrderImbalance ?? (object)DBNull.Value);
-                    cmd.Parameters.AddWithValue("instrumentType", "STOCK");
-                    cmd.Parameters.AddWithValue("source", "websocket");
-
-                    await cmd.ExecuteNonQueryAsync();
-                }
-            }
-        }
-        private async Task InsertMinuteBarAsync(MinuteRow bar, string instrumentKey)
-        {
-            const string sql = @"INSERT INTO minute_bars (ts, instrument_key, open, high, low, close, volume, delta, rolling_cvd, oi)
-VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolling_cvd, @oi);";
-            var conn = new NpgsqlConnection(_connectionString);
-            await conn.OpenAsync();
-            var cmd = new NpgsqlCommand(sql, conn);
-            cmd.Parameters.AddWithValue("ts", bar.Time);
-            cmd.Parameters.AddWithValue("instrumentKey", instrumentKey);
-            cmd.Parameters.AddWithValue("open", bar.Open);
-            cmd.Parameters.AddWithValue("high", bar.High);
-            cmd.Parameters.AddWithValue("low", bar.Low);
-            cmd.Parameters.AddWithValue("close", bar.Close);
-            cmd.Parameters.AddWithValue("volume", bar.Volume);
-            cmd.Parameters.AddWithValue("delta", bar.Delta);
-            cmd.Parameters.AddWithValue("rolling_cvd", bar.RollingCvd);
-            cmd.Parameters.AddWithValue("oi", bar.OI);
-            await cmd.ExecuteNonQueryAsync();
-        }
         #endregion
 
         #region --- Candidate builder & helpers ------------------------------------
@@ -768,7 +658,7 @@ VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolli
         }
         #endregion
 
-        
+
         #region --- Websocket skeleton (connect, receive, parse) ------------------
         private async Task<string> FetchAccessToken()
         {
@@ -807,9 +697,13 @@ VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolli
                 var result = await dataFetcher.GetInstrumentsAsync();
                 var equitylist = result.Item1;
                 var fnolist = result.Item2;
+                var niftyce = result.Item3;
+                var niftype = result.Item4;
 
-                foreach (var i in equitylist) instruments.Add(i.instrument_key);
+                //foreach (var i in equitylist) instruments.Add(i.instrument_key);
                 foreach (var i in fnolist) instruments.Add(i.instrument_key);
+                foreach (var i in niftyce) instruments.Add(i.instrument_key);
+                foreach (var i in niftype) instruments.Add(i.instrument_key);
 
                 foreach (var symbol in instruments)
                 {
@@ -818,11 +712,22 @@ VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolli
 
                     var fnoItem = fnolist.FirstOrDefault(x => x.instrument_key == symbol);
                     if (fnoItem != null) _instrumentNameMap[symbol] = fnoItem.trading_symbol;
+
+                    var niftyceitem = niftyce.FirstOrDefault(x => x.instrument_key == symbol);
+                    if (niftyceitem != null) _instrumentNameMap[symbol] = niftyceitem.trading_symbol;
+
+                    var niftypeitem = niftype.FirstOrDefault(x => x.instrument_key == symbol);
+                    if (niftypeitem != null) _instrumentNameMap[symbol] = niftypeitem.trading_symbol;
                 }
             }
             catch (Exception ex)
             {
                 Dispatcher.Invoke(() => OutputTextBox.AppendText($"Getsymbollist error: {ex.Message}\n"));
+            }
+
+            foreach (var item in _instrumentNameMap)
+            {
+                InstrumentCombo.Items.Add(item.Value);
             }
         }
         private async Task StartAsync()
@@ -878,7 +783,7 @@ VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolli
                     OutputTextBox.AppendText($"Authorize response: {response.Content}\n");
                 });
 
-                
+
 
                 if (response.IsSuccessful)
                 {
@@ -894,7 +799,7 @@ VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolli
                     OutputTextBox.AppendText($"GetWebSocketUrlAsync error: {ex.Message}\n");
                 });
 
-                
+
             }
             return null;
         }
@@ -911,7 +816,7 @@ VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolli
                         ""guid"": ""{Guid.NewGuid()}"",
                         ""method"": ""sub"",
                         ""data"": {{
-                            ""mode"": ""full_d30"",
+                            ""mode"": ""full"",
                             ""instrumentKeys"": [{string.Join(",", batch.Select(k => $"\"{k}\""))}]
                         }}
                     }}";
@@ -1060,81 +965,7 @@ VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolli
                 throw;
             }
         }
-        private async Task ProcessCompleteMessage(WebSocketMessageType messageType, MemoryStream ms)
-        {
-            switch (messageType)
-            {
-                case WebSocketMessageType.Text:
-                    using (var reader = new StreamReader(ms, Encoding.UTF8))
-                    {
-                        var text = await reader.ReadToEndAsync();
-                        await ProcessTextMessage(text);
-                    }
-                    break;
 
-                case WebSocketMessageType.Binary:
-                    try
-                    {
-                        var feedResponse = FeedResponse.Parser.ParseFrom(ms);
-                        await ProcessFeedResponse(feedResponse);
-                    }
-                    catch (Exception ex)
-                    {
-                        await Dispatcher.InvokeAsync(() =>
-                        {
-                            OutputTextBox.AppendText($"Binary parse error: {ex.Message}\n");
-                        });
-                    }
-                    break;
-            }
-        }
-
-        private async Task HandleCloseMessage(WebSocketReceiveResult result)
-        {
-            var closeReason = result.CloseStatus.HasValue
-                ? $"{result.CloseStatus}: {result.CloseStatusDescription ?? "No reason"}"
-                : "No close status provided";
-
-            await Dispatcher.InvokeAsync(() =>
-            {
-                OutputTextBox.AppendText($"WebSocket closed by server: {closeReason}\n");
-            });
-        }
-
-        private async Task HandleReconnection(int retryCount, int maxRetries, string reason)
-        {
-            await Dispatcher.InvokeAsync(() =>
-                OutputTextBox.AppendText($"{reason}. Retry {retryCount}/{maxRetries}\n"));
-
-            await CleanupWebSocket();
-
-            // Progressive delay
-            int delaySeconds = Math.Min(30, 5 * (int)Math.Pow(2, retryCount - 1));
-            await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
-        }
-        private async Task CleanupWebSocket()
-        {
-            if (webSocket != null)
-            {
-                try
-                {
-                    // Don't try to close if already in a terminal state
-                    if (webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived)
-                    {
-                        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Cleaning up", CancellationToken.None);
-                    }
-                }
-                catch
-                {
-                    // Ignore errors during cleanup
-                }
-                finally
-                {
-                    webSocket.Dispose();
-                    webSocket = null;
-                }
-            }
-        }
         #endregion
         private async Task ProcessFeedResponse(FeedResponse feedResponse)
         {
@@ -1235,7 +1066,7 @@ VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolli
                 };
 
                 await _tickProcessor.StoreRawTickAsync(tick);
-                await AddTickAndAggregate(tick);
+                //await AddTickAndAggregate(tick);
             }
             catch (Exception ex)
             {
@@ -1246,254 +1077,6 @@ VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolli
             }
         }
 
-        public void Dispose()
-        {
-            _tickProcessor?.Dispose();
-        }
-
-
-        #region --- Charting -------------------------------------------------------
-        //private async void LoadChart_Click(object sender, RoutedEventArgs e)
-        //{
-        //    if (SymbolCombo.SelectedItem == null) return;
-        //    string sym = SymbolCombo.SelectedItem.ToString();
-        //    sym = "NSE_EQ|INE075A01022";
-        //    int tf = int.Parse(((System.Windows.Controls.ComboBoxItem)TimeframeCombo.SelectedItem).Content.ToString());
-        //    var minutes = await LoadLastNMinutes(sym, 240);
-        //    var agg = AggregateToTF(minutes, tf);
-        //    DrawPriceChart(agg);
-        //}
-
-        private List<MinuteRow> AggregateToTF(List<MinuteRow> minutes, int tf)
-        {
-            var list = new List<MinuteRow>();
-            if (!minutes.Any()) return list;
-            var ordered = minutes.OrderBy(m => m.Time).ToList();
-            for (int i = 0; i < ordered.Count; i += tf)
-            {
-                var bucket = ordered.Skip(i).Take(tf).ToList();
-                if (!bucket.Any()) break;
-                var b = new MinuteRow
-                {
-                    Time = bucket.First().Time,
-                    Open = bucket.First().Open,
-                    High = bucket.Max(x => x.High),
-                    Low = bucket.Min(x => x.Low),
-                    Close = bucket.Last().Close,
-                    Volume = bucket.Sum(x => x.Volume),
-                    Delta = bucket.Sum(x => x.Delta),
-                    RollingCvd = bucket.Last().RollingCvd,
-                    OI = bucket.Last().OI
-                };
-                list.Add(b);
-            }
-            return list;
-        }
-        //private void DrawPriceChart(List<MinuteRow> bars)
-        //{
-        //    PriceCanvas.Children.Clear();
-        //    CvdCanvas.Children.Clear();
-        //    if (bars == null || bars.Count == 0) return;
-
-        //    double w = PriceCanvas.ActualWidth; if (w == 0) w = PriceCanvas.Width = 900;
-        //    double h = PriceCanvas.ActualHeight; if (h == 0) h = PriceCanvas.Height = 400;
-        //    double cvdh = CvdCanvas.ActualHeight; if (cvdh == 0) cvdh = CvdCanvas.Height = 140;
-
-        //    double minP = bars.Min(b => b.Low);
-        //    double maxP = bars.Max(b => b.High);
-        //    double minCvd = bars.Min(b => b.RollingCvd);
-        //    double maxCvd = bars.Max(b => b.RollingCvd);
-
-        //    if (minP == maxP) { minP -= 1; maxP += 1; }
-        //    if (minCvd == maxCvd) { minCvd -= 1; maxCvd += 1; }
-
-        //    int n = bars.Count;
-        //    double xStep = w / Math.Max(1, n - 1);
-
-        //    //-----------------------------------
-        //    // PRICE CANDLESTICKS
-        //    //-----------------------------------
-        //    double candleWidth = xStep * 0.6;
-        //    for (int i = 0; i < n; i++)
-        //    {
-        //        var b = bars[i];
-        //        double x = i * xStep;
-
-        //        double yHigh = h - ((b.High - minP) / (maxP - minP) * h);
-        //        double yLow = h - ((b.Low - minP) / (maxP - minP) * h);
-        //        double yOpen = h - ((b.Open - minP) / (maxP - minP) * h);
-        //        double yClose = h - ((b.Close - minP) / (maxP - minP) * h);
-
-        //        // wick
-        //        var wick = new Line
-        //        {
-        //            X1 = x,
-        //            X2 = x,
-        //            Y1 = yHigh,
-        //            Y2 = yLow,
-        //            Stroke = Brushes.Gray,
-        //            StrokeThickness = 1
-        //        };
-        //        PriceCanvas.Children.Add(wick);
-
-        //        // body
-        //        var body = new Rectangle
-        //        {
-        //            Width = candleWidth,
-        //            Height = Math.Max(1, Math.Abs(yOpen - yClose)),
-        //            Fill = b.Close >= b.Open ? Brushes.LimeGreen : Brushes.Red,
-        //            Stroke = Brushes.Transparent
-        //        };
-        //        Canvas.SetLeft(body, x - candleWidth / 2);
-        //        Canvas.SetTop(body, Math.Min(yOpen, yClose));
-        //        PriceCanvas.Children.Add(body);
-        //    }
-
-        //    //-----------------------------------
-        //    // PRICE TREND LINE (Overlay)
-        //    //-----------------------------------
-        //    var priceLine = new Polyline { Stroke = Brushes.Yellow, StrokeThickness = 1.5 };
-        //    for (int i = 0; i < n; i++)
-        //    {
-        //        var b = bars[i];
-        //        double x = i * xStep;
-        //        double y = h - ((b.Close - minP) / (maxP - minP) * h);
-        //        priceLine.Points.Add(new Point(x, y));
-        //    }
-        //    PriceCanvas.Children.Add(priceLine);
-
-        //    //-----------------------------------
-        //    // CVD TREND LINE
-        //    //-----------------------------------
-        //    var cvdLine = new Polyline { Stroke = Brushes.Orange, StrokeThickness = 1.5 };
-        //    for (int i = 0; i < n; i++)
-        //    {
-        //        var b = bars[i];
-        //        double x = i * xStep;
-        //        double y = cvdh - ((b.RollingCvd - minCvd) / (maxCvd - minCvd) * cvdh);
-        //        cvdLine.Points.Add(new Point(x, y));
-        //    }
-        //    CvdCanvas.Children.Add(cvdLine);
-        //}
-
-
-        //private void DrawPriceChart(List<MinuteRow> bars)
-        //{
-        //    PriceCanvas.Children.Clear();
-        //    CvdCanvas.Children.Clear();
-        //    if (bars == null || bars.Count == 0) return;
-
-        //    double w = PriceCanvas.ActualWidth; if (w == 0) w = PriceCanvas.Width = 900;
-        //    double h = PriceCanvas.ActualHeight; if (h == 0) h = PriceCanvas.Height = 400;
-        //    double cvdh = CvdCanvas.ActualHeight; if (cvdh == 0) cvdh = CvdCanvas.Height = 140;
-
-        //    double minP = bars.Min(b => b.Low); double maxP = bars.Max(b => b.High);
-        //    double minCvd = bars.Min(b => b.RollingCvd); double maxCvd = bars.Max(b => b.RollingCvd);
-        //    if (minP == maxP) { minP -= 1; maxP += 1; }
-        //    if (minCvd == maxCvd) { minCvd -= 1; maxCvd += 1; }
-
-        //    int n = bars.Count;
-        //    double xStep = w / Math.Max(1, n - 1);
-
-        //    var priceLine = new Polyline { Stroke = Brushes.LightGreen, StrokeThickness = 1.5 };
-        //    for (int i = 0; i < n; i++)
-        //    {
-        //        var b = bars[i];
-        //        double x = i * xStep;
-        //        double y = h - ((b.Close - minP) / (maxP - minP) * h);
-        //        priceLine.Points.Add(new Point(x, y));
-        //    }
-        //    PriceCanvas.Children.Add(priceLine);
-
-        //    for (int i = 0; i < n; i++)
-        //    {
-        //        double x = i * xStep;
-        //        var b = bars[i];
-        //        double yOpen = h - ((b.Open - minP) / (maxP - minP) * h);
-        //        double yClose = h - ((b.Close - minP) / (maxP - minP) * h);
-        //        double yHigh = h - ((b.High - minP) / (maxP - minP) * h);
-        //        double yLow = h - ((b.Low - minP) / (maxP - minP) * h);
-
-        //        var line = new Line { X1 = x, X2 = x, Y1 = yHigh, Y2 = yLow, Stroke = Brushes.Gray, StrokeThickness = 1 };
-        //        PriceCanvas.Children.Add(line);
-        //        var rect = new Rectangle { Width = Math.Max(2, xStep * 0.5), Height = Math.Max(1, Math.Abs(yOpen - yClose)), Stroke = Brushes.Transparent };
-        //        Canvas.SetLeft(rect, x - rect.Width / 2);
-        //        Canvas.SetTop(rect, Math.Min(yOpen, yClose));
-        //        rect.Fill = b.Close >= b.Open ? Brushes.Green : Brushes.Red;
-        //        PriceCanvas.Children.Add(rect);
-        //    }
-
-        //    var cvdLine = new Polyline { Stroke = Brushes.Orange, StrokeThickness = 1.5 };
-        //    for (int i = 0; i < n; i++)
-        //    {
-        //        var b = bars[i];
-        //        double x = i * xStep;
-        //        double y = cvdh - ((b.RollingCvd - minCvd) / (maxCvd - minCvd) * cvdh);
-        //        cvdLine.Points.Add(new Point(x, y));
-        //    }
-        //    CvdCanvas.Children.Add(cvdLine);
-        //}
-        #endregion
-
-
-        //private async Task ProcessSingleFeed(string instrumentKey, Feed feed)
-        //{
-        //    try
-        //    {
-        //        double? bestBidPrice = null;
-        //        double? bestAskPrice = null;
-        //        long? bestBidQty = null;
-        //        long? bestAskQty = null;
-
-        //        if (feed?.FullFeed?.MarketFF == null) return;
-        //        var data = feed.FullFeed.MarketFF;
-
-        //        if (data.MarketLevel?.BidAskQuote != null && data.MarketLevel.BidAskQuote.Count > 0)
-        //        {
-        //            var topQuote = data.MarketLevel.BidAskQuote[0];
-        //            bestBidPrice = topQuote.BidP;
-        //            bestAskPrice = topQuote.AskP;
-        //            bestBidQty = topQuote.BidQ;
-        //            bestAskQty = topQuote.AskQ;
-        //        }
-
-        //        double price = data.Ltpc?.Ltp ?? 0;
-        //        if (price <= 0) return;
-
-        //        double cvd = CalculateCVD(data);
-        //        double? orderImbalance = CalculateOrderImbalance(feed);
-        //        long size = data.Vtt;
-
-
-        //        if (!_instrumentNameMap.TryGetValue(instrumentKey, out string name))
-        //            name = instrumentKey;
-
-        //        var tick = new RawTick
-        //        {
-        //            Ts = DateTime.UtcNow,
-        //            InstrumentKey = instrumentKey,
-        //            InstrumentName = name,
-        //            Price = price,
-        //            Size = size,
-        //            BidPrice = bestBidPrice,
-        //            BidQty = bestBidQty,
-        //            AskPrice = bestAskPrice,
-        //            AskQty = bestAskQty,
-        //            OI = data.Oi,
-        //            Cvd = cvd,
-        //            OrderImbalance = orderImbalance
-        //        };
-
-        //        await StoreRawTickAsync(tick);
-        //        await AddTickAndAggregate(tick);
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        MessageBox.Show($"{ex.Message}\n\n{ex.StackTrace}");
-        //        await Dispatcher.InvokeAsync(() => { OutputTextBox.AppendText($"ProcessSingleFeed error: {ex.Message}\n{ex.StackTrace}\n"); });
-        //    }
-
-        //}
         private double CalculateCVD(MarketFullFeed data)
         {
             double price = data.Ltpc?.Ltp ?? 0;
@@ -1526,84 +1109,6 @@ VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolli
             }
         }
 
-
-
-        //private async Task AddTickAndAggregate(RawTick tick)
-        //{
-        //    if (!_tickBuffer.ContainsKey(tick.InstrumentKey))
-        //        _tickBuffer[tick.InstrumentKey] = new List<RawTick>();
-        //    _tickBuffer[tick.InstrumentKey].Add(tick);
-
-        //    var currentMinute = new DateTime(tick.Ts.Year, tick.Ts.Month, tick.Ts.Day, tick.Ts.Hour, tick.Ts.Minute, 0);
-        //    if (!_lastMinuteBar.ContainsKey(tick.InstrumentKey))
-        //        _lastMinuteBar[tick.InstrumentKey] = currentMinute;
-
-        //    // check if buffer crossed into next minute
-        //    if (currentMinute > _lastMinuteBar[tick.InstrumentKey])
-        //    {
-        //        var ticks = _tickBuffer[tick.InstrumentKey];
-        //        var bar = AggregateToMinute(ticks);
-        //        if (bar != null)
-        //        {
-        //            await InsertMinuteBarAsync(bar, tick.InstrumentKey);
-        //            //RecalculateCandidate(tick.InstrumentKey);
-        //        }
-
-        //        _tickBuffer[tick.InstrumentKey].Clear();
-        //        _lastMinuteBar[tick.InstrumentKey] = currentMinute;
-        //    }
-        //}
-
-        //private MinuteRow AggregateToMinute(List<RawTick> ticks)
-        //{
-        //    if (ticks == null || ticks.Count == 0) return null;
-
-        //    var ordered = ticks.OrderBy(t => t.Ts).ToList();
-        //    string instrumentKey = ordered.First().InstrumentKey;
-        //    double open = ordered.First().Price;
-        //    double close = ordered.Last().Price;
-        //    double high = ordered.Max(t => t.Price);
-        //    double low = ordered.Min(t => t.Price);
-        //    long volume = ordered.Sum(t => t.Size);
-        //    long delta = (long)ordered.Sum(t => t.Cvd ?? 0);
-
-        //    // Get last CVD from cache instead of database
-        //    double lastCvd = GetLastCVD(instrumentKey);
-        //    double rolling = lastCvd + delta;
-
-        //    var minuteRow = new MinuteRow
-        //    {
-        //        Time = new DateTime(ordered.First().Ts.Year, ordered.First().Ts.Month, ordered.First().Ts.Day, ordered.First().Ts.Hour, ordered.First().Ts.Minute, 0),
-        //        Open = open,
-        //        High = high,
-        //        Low = low,
-        //        Close = close,
-        //        Volume = volume,
-        //        Delta = delta,
-        //        RollingCvd = rolling,
-        //        OI = ordered.Last().OI ?? 0
-        //    };
-
-        //    // Update cache with new rolling CVD value
-        //    UpdateCvd(instrumentKey, rolling);
-
-        //    return minuteRow;
-        //}
-
-        //private double GetLastCVD(string key)
-        //{
-        //    try
-        //    {
-        //        var conn = new NpgsqlConnection(_connectionString);
-        //        conn.Open();
-        //        var cmd = new NpgsqlCommand("SELECT rolling_cvd FROM minute_bars WHERE instrument_key=@k ORDER BY ts DESC LIMIT 1", conn);
-        //        cmd.Parameters.AddWithValue("k", key);
-        //        var res = cmd.ExecuteScalar();
-        //        return res == null ? 0 : Convert.ToDouble(res);
-        //    }
-        //    catch { return 0; }
-        //}
-
         #endregion
 
         #region --- Candidate Calculation & UI Refresh ----------------------
@@ -1625,272 +1130,2933 @@ VALUES (@ts, @instrumentKey, @open, @high, @low, @close, @volume, @delta, @rolli
 
             return (topQuote.BidQ - topQuote.AskQ) / total;
         }
-        private async void RecalculateCandidate(string instrumentKey)
-        {
-            var last30 = await LoadLastNMinutes(instrumentKey, 30);
-            if (last30 == null || last30.Count == 0) return;
 
-            var dailyStock = await LoadDailyStock(instrumentKey, 400);
-            var dailyFuture = await LoadDailyFuture(instrumentKey, 400);
-
-            var cand = BuildCandidate(instrumentKey, last30, dailyStock, dailyFuture);
-
-            var existing = _candidates.FirstOrDefault(c => c.StockName == instrumentKey);
-            if (existing != null)
-            {
-                int idx = _candidates.IndexOf(existing);
-                _candidates[idx] = cand;
-            }
-            else
-            {
-                _candidates.Add(cand);
-            }
-
-            // sort high score on top
-            var sorted = _candidates.OrderByDescending(c => c.TotalScore).ToList();
-            _candidates.Clear();
-            foreach (var c in sorted) _candidates.Add(c);
-        }
-
-
-        //private async Task ReconnectWebSocket()
-        //{
-        //    await CleanupWebSocket(); // Use the cleanup method
-
-        //    try
-        //    {
-        //        webSocket = new ClientWebSocket
-        //        {
-        //            Options = {
-        //        KeepAliveInterval = TimeSpan.FromSeconds(30),
-        //        // Add any other options needed for your specific WebSocket server
-        //    }
-        //        };
-
-        //        var wsUrl = await GetWebSocketUrlAsync();
-        //        await webSocket.ConnectAsync(new Uri(wsUrl), _cts.Token);
-
-        //        // Small delay to ensure connection is stable
-        //        await Task.Delay(1000);
-
-        //        await SendSubscriptionAsync(instruments);
-
-        //        await Dispatcher.InvokeAsync(() =>
-        //        {
-        //            OutputTextBox.AppendText("✅ WebSocket reconnected successfully\n");
-        //            ConnectionStatus.Text = "Connected";
-        //            ConnectionStatus.Foreground = Brushes.Green;
-        //        });
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        await Dispatcher.InvokeAsync(() =>
-        //        {
-        //            OutputTextBox.AppendText($"❌ Reconnection failed: {ex.Message}\n");
-        //            ConnectionStatus.Text = "Failed";
-        //            ConnectionStatus.Foreground = Brushes.Red;
-        //        });
-        //        throw;
-        //    }
-        //}
         private async void ConnectBtn_Click(object sender, RoutedEventArgs e)
         {
             await StartAsync();
         }
         #endregion
-    }
 
-    #region --- Models -------------------------------------------------------------
-    public class EnhancedTradeCandidate
-    {
-        public string StockName { get; set; }
-        public string Sector { get; set; }
-        public double SpotPrice { get; set; }
-        public double FuturePrice { get; set; }
-        public string OIChange { get; set; }
-        public string VolumeStatus { get; set; }
-        public double VolumeRatio { get; set; }
-        public double StockCVD { get; set; }
-        public double FuturesCVD { get; set; }
-        public double RollingDelta { get; set; }
-        public string CVDStatus { get; set; }
-        public string FirstMinuteBreakout { get; set; }
-        public string FiveMinuteBreakout { get; set; }
-        public string VWAPStatus { get; set; }
-        public string OpenHighLow { get; set; }
-        public string Near52WeekHigh { get; set; }
-        public double DistanceFrom52WH { get; set; }
-        public int VolumeScore { get; set; }
-        public int CVDScore { get; set; }
-        public int BreakoutScore { get; set; }
-        public int TotalScore { get; set; }
-        public string SignalStrength { get; set; }
-        public string Support { get; set; }
-        public string Resistance { get; set; }
-        public int SupportHit { get; set; }
-        public int ResistanceHit { get; set; }
-    }
-
-    public class MinuteRow
-    {
-        public DateTime Time { get; set; }
-        public double Open { get; set; }
-        public double High { get; set; }
-        public double Low { get; set; }
-        public double Close { get; set; }
-        public long Volume { get; set; }
-        public double Delta { get; set; }  // Changed from long to double
-        public double RollingCvd { get; set; }
-        public double OI { get; set; }
-    }
-
-    public class RawTick
-    {
-        public DateTime Ts { get; set; }
-        public string InstrumentKey { get; set; }
-        public string InstrumentName { get; set; }
-        public double Price { get; set; }
-        public long Size { get; set; }
-        public double? BidPrice { get; set; }
-        public long? BidQty { get; set; }
-        public double? AskPrice { get; set; }
-        public long? AskQty { get; set; }
-        public double? OI { get; set; }
-        public double? Cvd { get; set; }
-        public double? OrderImbalance { get; set; }
-    }
-    public class DailyStockRow
-    {
-        public DateTime DayDate { get; set; }
-        public double Open { get; set; }
-        public double High { get; set; }
-        public double Low { get; set; }
-        public double Close { get; set; }
-        public long Volume { get; set; }
-        public double Delivery { get; set; }
-    }
-
-    public class DailyFutureRow
-    {
-        public DateTime DayDate { get; set; }
-        public double FutOpen { get; set; }
-        public double FutHigh { get; set; }
-        public double FutLow { get; set; }
-        public double FutClose { get; set; }
-        public long FutVolume { get; set; }
-        public long OpenInterest { get; set; }
-    }
-    #endregion
-
-    #region --- TradeSignalCalculator ---------------------------------------------
-    public class TradeSignalCalculator
-    {
-        public int RollingWindowMinutes { get; set; } = 15;
-        public double VolumeMultiplierThreshold { get; set; } = 2.0;
-        public long CvdSpikeThreshold { get; set; } = 20000;
-        public double CvdSlopeThreshold { get; set; } = 2000;
-
-        public (double rollingCvd, double slope, bool rawSpike) ComputeRollingCvdAndSpike(IEnumerable<MinuteRow> lastN)
+        private async void BackButton_Click(object sender, RoutedEventArgs e)
         {
-            var list = lastN.OrderBy(m => m.Time).ToList();
-            if (!list.Any()) return (0, 0, false);
-            double rolling = list.Last().RollingCvd;
-            double slope = (list.Last().RollingCvd - list.First().RollingCvd) / Math.Max(1, (list.Count - 1));
-            bool rawSpike = list.Any(m => Math.Abs(m.Delta) >= CvdSpikeThreshold);
-            return (rolling, slope, rawSpike);
+            await RunScanners();
         }
 
-        public double ComputeVwap(IEnumerable<MinuteRow> bars)
+        private async void NextButton_Click(object sender, RoutedEventArgs e)
         {
-            double pvSum = 0; long qtySum = 0;
-            foreach (var b in bars)
+            await RunScanners();
+        }
+
+        private void PopulateEndTimeComboBox()
+        {
+            EndTimeComboBox.Items.Clear();
+            for (int i = 0; i <= 400; i++)
             {
-                double typical = (b.High + b.Low + b.Close) / 3.0;
-                pvSum += typical * b.Volume;
-                qtySum += b.Volume;
+                var time = endIST.AddMinutes(i);
+                EndTimeComboBox.Items.Add(time.ToString("HH:mm:ss"));
             }
-            return qtySum == 0 ? 0 : pvSum / qtySum;
+
+            EndTimeComboBox.SelectedItem = endIST.ToString("HH:mm:ss");
         }
 
-        public double ComputeVolumeRatio(MinuteRow last, IEnumerable<MinuteRow> prev)
+        private void EndTimeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            var prevList = prev.ToList();
-            var avg = prevList.Any() ? prevList.Average(p => (double)p.Volume) : 0.0;
-            return avg == 0 ? 0 : (double)last.Volume / avg;
+            //UpdateEndIST();
+        }
+        private void UpdateEndIST()
+        {
+            if (EndDatePicker.SelectedDate != null && EndTimeComboBox.SelectedItem != null)
+            {
+                var selectedDate = EndDatePicker.SelectedDate.Value;
+                var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+
+                endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                      selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+                UpdateTimeRangeDisplay();
+            }
+        }
+        private void UpdateTimeRangeDisplay()
+        {
+            //EndTimeComboBox.Text = $"Start: {startIST:yyyy-MM-dd HH:mm:ss} | End: {endIST:yyyy-MM-dd HH:mm:ss}";
+        }
+        private void EndDatePicker_SelectedDateChanged(object sender, SelectionChangedEventArgs e)
+        {
+            UpdateEndIST();
         }
 
-        public string ClassifyOIChange(long todayOi, long prevOi, double priceChangePercent)
+        //        private async void Search_Click(object sender, RoutedEventArgs e)
+        //        {
+        //            if (InstrumentCombo.SelectedItem == null)
+        //            {
+        //                MessageBox.Show("Please select an instrument.");
+        //                return;
+        //            }
+
+        //            var selectedDate = EndDatePicker.SelectedDate.Value;
+        //            var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+        //            var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+
+        //            startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+        //                                  firsttime.Hour, firsttime.Minute, firsttime.Second);
+
+        //            endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+        //                                  selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+
+
+        //            string symbol = InstrumentCombo.SelectedItem.ToString();
+
+
+        //            var startUtc = startIST.ToUniversalTime();
+        //            var endUtc = endIST.ToUniversalTime();
+        //            int aggmin =15;
+        //            var con = new NpgsqlConnection(_connectionString);
+        //            await con.OpenAsync();
+
+        //            string sql = @"
+        //        WITH ticks AS (
+        //        SELECT 
+        //        ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+        //        ts,
+        //        price,
+        //        size,
+        //        oi,
+
+        //        -- Compute tick delta from price movement instead of using raw CVV
+        //        CASE 
+        //            WHEN price > LAG(price) OVER (ORDER BY ts) THEN size
+        //            ELSE 0 
+        //        END AS tick_buy,
+
+        //        CASE 
+        //            WHEN price < LAG(price) OVER (ORDER BY ts) THEN size
+        //            ELSE 0 
+        //        END AS tick_sell
+
+        //    FROM raw_ticks
+        //    WHERE instrument_name = @instrumentName
+        //      AND ts BETWEEN @startUtc AND @endUtc
+        //),
+
+        //bucketed AS (
+        //    SELECT 
+        //        (date_trunc('minute', ts_ist) 
+        //         - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))) AS candle_time,
+
+        //        price, size, oi,
+        //        ts_ist,
+        //        tick_buy,
+        //        tick_sell,
+
+        //        row_number() OVER (
+        //            PARTITION BY (date_trunc('minute', ts_ist) 
+        //               - make_interval(mins => EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))
+        //            ORDER BY ts_ist ASC
+        //        ) AS rn_open,
+
+        //        row_number() OVER (
+        //            PARTITION BY (date_trunc('minute', ts_ist) 
+        //               - make_interval(mins => EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))
+        //            ORDER BY ts_ist DESC
+        //        ) AS rn_close
+        //    FROM ticks
+        //),
+
+        //candles AS (
+        //    SELECT 
+        //        candle_time,
+
+        //        MAX(price) FILTER (WHERE rn_open = 1)  AS open_price,
+        //        MAX(price)                             AS high_price,
+        //        MIN(price)                             AS low_price,
+        //        MAX(price) FILTER (WHERE rn_close = 1) AS close_price,
+
+        //        SUM(size) AS total_volume,
+
+        //        SUM(tick_buy)  AS total_buy_delta,
+        //        SUM(tick_sell) AS total_sell_delta,
+
+        //        MAX(oi) AS last_oi
+        //    FROM bucketed
+        //    GROUP BY candle_time
+        //),
+
+        //final AS (
+        //    SELECT
+        //        candle_time,
+        //        open_price, high_price, low_price, close_price,
+        //        total_volume,
+
+        //        (total_buy_delta - total_sell_delta) AS total_delta,
+
+        //        total_buy_delta,
+        //        total_sell_delta,
+
+        //        CASE WHEN (total_buy_delta + total_sell_delta) > 0
+        //             THEN total_buy_delta * 100.0 / (total_buy_delta + total_sell_delta)
+        //             ELSE 0 END AS buy_strength_pct,
+
+        //        CASE WHEN (total_buy_delta + total_sell_delta) > 0
+        //             THEN total_sell_delta * 100.0 / (total_buy_delta + total_sell_delta)
+        //             ELSE 0 END AS sell_strength_pct,
+
+        //        last_oi,
+        //        last_oi - LAG(last_oi) OVER (ORDER BY candle_time) AS oi_change,
+        //        close_price - LAG(close_price) OVER (ORDER BY candle_time) AS price_change,
+
+        //        CASE 
+        //            WHEN (close_price > open_price AND (total_buy_delta - total_sell_delta) < 0)
+        //                THEN 'Bearish Divergence'
+        //            WHEN (close_price < open_price AND (total_buy_delta - total_sell_delta) > 0)
+        //                THEN 'Bullish Divergence'
+        //            ELSE 'None'
+        //        END AS divergence,
+
+        //        CASE 
+        //            WHEN last_oi > LAG(last_oi) OVER (ORDER BY candle_time)
+        //             AND close_price > LAG(close_price) OVER (ORDER BY candle_time)
+        //                THEN 'LONG BUILD-UP'
+
+        //            WHEN last_oi > LAG(last_oi) OVER (ORDER BY candle_time)
+        //             AND close_price < LAG(close_price) OVER (ORDER BY candle_time)
+        //                THEN 'SHORT BUILD-UP'
+
+        //            WHEN last_oi < LAG(last_oi) OVER (ORDER BY candle_time)
+        //             AND close_price > LAG(close_price) OVER (ORDER BY candle_time)
+        //                THEN 'SHORT COVERING'
+
+        //            WHEN last_oi < LAG(last_oi) OVER (ORDER BY candle_time)
+        //             AND close_price < LAG(close_price) OVER (ORDER BY candle_time)
+        //                THEN 'LONG UNWINDING'
+
+        //            ELSE 'NEUTRAL'
+        //        END AS signal_type,
+
+        //        CASE 
+        //            WHEN (total_buy_delta - total_sell_delta) > 0 THEN 'Buyers Aggressive'
+        //            WHEN (total_buy_delta - total_sell_delta) < 0 THEN 'Sellers Aggressive'
+        //            ELSE 'Flat'
+        //        END AS delta_sentiment
+
+        //    FROM candles
+        //)
+
+        //SELECT *
+        //FROM final
+        //ORDER BY candle_time ASC;";
+
+        //            var cmd = new NpgsqlCommand(sql, con);
+        //            cmd.Parameters.AddWithValue("instrumentName", symbol);
+        //            cmd.Parameters.AddWithValue("startUtc", startUtc);
+        //            cmd.Parameters.AddWithValue("endUtc", endUtc);
+        //            cmd.Parameters.AddWithValue("aggmin", aggmin); // integer interval, e.g. 5,15,30
+
+        //            var dt = new DataTable();
+
+        //            using (var reader = await cmd.ExecuteReaderAsync())
+        //            {
+        //                dt.Load(reader);
+        //            }
+        //            ReplaceWithLakhFormat(dt);
+        //            DataGridCVD.ItemsSource = dt.DefaultView;
+        //            MessageBox.Show("Done");
+        //        }
+
+        private async void Search_Click(object sender, RoutedEventArgs e)
         {
-            long deltaOi = todayOi - prevOi;
-            if (deltaOi > 0 && priceChangePercent > 0.1) return "Long Build";
-            if (deltaOi > 0 && priceChangePercent < -0.1) return "Short Build";
-            if (deltaOi < 0 && priceChangePercent > 0.1) return "Short Covering";
-            if (deltaOi < 0 && priceChangePercent < -0.1) return "Long Unwinding";
+            if (InstrumentCombo.SelectedItem == null)
+            {
+                MessageBox.Show("Please select an instrument.");
+                return;
+            }
+            if (Timecom.SelectedItem == null)
+            {
+                MessageBox.Show("Please select Time Interval.");
+                return;
+            }
+            if (EndDatePicker.SelectedDate == null)
+            {
+                MessageBox.Show("Please select End Date.");
+                return;
+            }
+
+            try
+            {
+                var selectedDate = EndDatePicker.SelectedDate.Value;
+                var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+                var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+
+                startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                      firsttime.Hour, firsttime.Minute, firsttime.Second);
+
+                endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                      selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+
+                string symbol = InstrumentCombo.SelectedItem.ToString();
+                int aggmin = (int)Timecom.SelectedItem; // keep as you had it
+                var startUtc = startIST.ToUniversalTime();
+                var endUtc = endIST.ToUniversalTime();
+
+                using (var con = new NpgsqlConnection(_connectionString))
+                {
+                    await con.OpenAsync();
+
+                    string sql = @"
+WITH ticks AS (
+    SELECT 
+        ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+        ts,
+        price,
+        size,
+        oi,
+        order_imbalance,   -- ADDED
+        CASE 
+            WHEN price > LAG(price) OVER (ORDER BY ts) THEN size
+            ELSE 0 
+        END AS tick_buy,
+        CASE 
+            WHEN price < LAG(price) OVER (ORDER BY ts) THEN size
+            ELSE 0 
+        END AS tick_sell
+    FROM raw_ticks
+    WHERE instrument_name = @instrumentName
+      AND ts BETWEEN @startUtc AND @endUtc
+),
+
+bucketed AS (
+    SELECT 
+        (date_trunc('minute', ts_ist) 
+         - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))) AS candle_time,
+        price, size, oi, ts_ist,
+        tick_buy, tick_sell,
+        order_imbalance,   -- ADDED
+        row_number() OVER (
+            PARTITION BY (date_trunc('minute', ts_ist) 
+               - make_interval(mins => EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))
+            ORDER BY ts_ist ASC
+        ) AS rn_open,
+        row_number() OVER (
+            PARTITION BY (date_trunc('minute', ts_ist) 
+               - make_interval(mins => EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))
+            ORDER BY ts_ist DESC
+        ) AS rn_close
+    FROM ticks
+),
+
+candles AS (
+    SELECT 
+        candle_time,
+        MAX(price) FILTER (WHERE rn_open = 1)  AS open_price,
+        MAX(price)                             AS high_price,
+        MIN(price)                             AS low_price,
+        MAX(price) FILTER (WHERE rn_close = 1) AS close_price,
+        SUM(size) AS total_volume,
+        SUM(tick_buy)  AS total_buy_delta,
+        SUM(tick_sell) AS total_sell_delta,
+        MAX(oi) AS last_oi,
+        SUM(order_imbalance) AS total_order_imbalance   -- ADDED
+    FROM bucketed
+    GROUP BY candle_time
+),
+
+final AS (
+    SELECT
+        candle_time,
+        open_price, high_price, low_price, close_price,
+        total_volume,
+
+        (total_buy_delta - total_sell_delta) AS total_delta,
+        total_buy_delta,
+        total_sell_delta,
+
+        -- ORDER IMBALANCE (ADDED)
+        total_order_imbalance,
+        SUM(total_order_imbalance) OVER (ORDER BY candle_time) AS cumulative_order_imbalance,   -- ADDED
+
+        -- Volume and Delta in Lakhs
+        total_volume / 100000.0 AS volume_lakh,
+        (total_buy_delta - total_sell_delta) / 100000.0 AS delta_lakh,
+
+        -- Cumulative CVD in Lakhs
+        SUM((total_buy_delta - total_sell_delta) / 100000.0) OVER (ORDER BY candle_time) AS cumulative_cvd_lakh,
+
+        -- Open = High/Low indicators
+        CASE WHEN open_price = high_price THEN 'Yes' ELSE 'No' END AS open_equals_high,
+        CASE WHEN open_price = low_price THEN 'Yes' ELSE 'No' END AS open_equals_low,
+
+        -- Candle Strength Percentage (Body as % of Range)
+        CASE 
+            WHEN (high_price - low_price) > 0 
+            THEN ABS(close_price - open_price) * 100.0 / (high_price - low_price)
+            ELSE 0 
+        END AS candle_strength_pct,
+
+        -- Buy/Sell Strength Percentage
+        CASE WHEN (total_buy_delta + total_sell_delta) > 0
+             THEN total_buy_delta * 100.0 / (total_buy_delta + total_sell_delta)
+             ELSE 0 END AS buy_strength_pct,
+
+        CASE WHEN (total_buy_delta + total_sell_delta) > 0
+             THEN total_sell_delta * 100.0 / (total_buy_delta + total_sell_delta)
+             ELSE 0 END AS sell_strength_pct,
+
+        last_oi,
+        last_oi - LAG(last_oi) OVER (ORDER BY candle_time) AS oi_change,
+        close_price - LAG(close_price) OVER (ORDER BY candle_time) AS price_change,
+
+        -- Enhanced Divergence with threshold (kept as original)
+        CASE 
+            WHEN (close_price > open_price AND (total_buy_delta - total_sell_delta) < -50000) 
+                 AND ABS(close_price - open_price) > (high_price - low_price) * 0.3
+                THEN 'Strong Bearish Divergence'
+            WHEN (close_price > open_price AND (total_buy_delta - total_sell_delta) < 0) 
+                THEN 'Bearish Divergence'
+            WHEN (close_price < open_price AND (total_buy_delta - total_sell_delta) > 50000) 
+                 AND ABS(close_price - open_price) > (high_price - low_price) * 0.3
+                THEN 'Strong Bullish Divergence'
+            WHEN (close_price < open_price AND (total_buy_delta - total_sell_delta) > 0) 
+                THEN 'Bullish Divergence'
+            ELSE 'None'
+        END AS divergence,
+
+        -- Signal Type (kept as original)
+        CASE 
+            WHEN last_oi > LAG(last_oi) OVER (ORDER BY candle_time)
+             AND close_price > LAG(close_price) OVER (ORDER BY candle_time)
+                THEN 'LONG BUILD-UP'
+
+            WHEN last_oi > LAG(last_oi) OVER (ORDER BY candle_time)
+             AND close_price < LAG(close_price) OVER (ORDER BY candle_time)
+                THEN 'SHORT BUILD-UP'
+
+            WHEN last_oi < LAG(last_oi) OVER (ORDER BY candle_time)
+             AND close_price > LAG(close_price) OVER (ORDER BY candle_time)
+                THEN 'SHORT COVERING'
+            
+            WHEN last_oi < LAG(last_oi) OVER (ORDER BY candle_time)
+             AND close_price < LAG(close_price) OVER (ORDER BY candle_time)
+                THEN 'LONG UNWINDING'
+
+            ELSE 'NEUTRAL'
+        END AS signal_type,
+
+        -- Enhanced Delta Sentiment with threshold (kept as original)
+        CASE 
+            WHEN (total_buy_delta - total_sell_delta) > 50000 THEN 'Strong Buyers'
+            WHEN (total_buy_delta - total_sell_delta) > 10000 THEN 'Buyers Aggressive'
+            WHEN (total_buy_delta - total_sell_delta) < -50000 THEN 'Strong Sellers'
+            WHEN (total_buy_delta - total_sell_delta) < -10000 THEN 'Sellers Aggressive'
+            WHEN (total_buy_delta - total_sell_delta) > 0 THEN 'Mild Buyers'
+            WHEN (total_buy_delta - total_sell_delta) < 0 THEN 'Mild Sellers'
+            ELSE 'Flat'
+        END AS delta_sentiment
+
+    FROM candles
+)
+
+SELECT *
+FROM final
+ORDER BY candle_time ASC;
+";
+
+                    using (var cmd = new NpgsqlCommand(sql, con))
+                    {
+                        cmd.Parameters.AddWithValue("instrumentName", symbol);
+                        cmd.Parameters.AddWithValue("startUtc", startUtc);
+                        cmd.Parameters.AddWithValue("endUtc", endUtc);
+                        cmd.Parameters.AddWithValue("aggmin", aggmin);
+
+                        var dt = new DataTable();
+                        using (var reader = await cmd.ExecuteReaderAsync())
+                        {
+                            dt.Load(reader);
+                        }
+
+                        DataGridCVD.ItemsSource = dt.DefaultView;
+                        MessageBox.Show("Done");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                //MessageBox.Show($"Error:"  ex.Message};
+            }
+        }
+
+        //private async void Search_Click(object sender, RoutedEventArgs e)
+        //{
+        //    if (InstrumentCombo.SelectedItem == null)
+        //    {
+        //        MessageBox.Show("Please select an instrument.");
+        //        return;
+        //    }
+        //    if (Timecom.SelectedItem == null)
+        //    {
+        //        MessageBox.Show("Please select Time Interval.");
+        //        return;
+        //    }
+        //    if (EndDatePicker.SelectedDate == null)
+        //    {
+        //        MessageBox.Show("Please select End Date.");
+        //        return;
+        //    }
+        //    var selectedDate = EndDatePicker.SelectedDate.Value;
+        //    var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+        //    var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+
+        //    startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+        //                          firsttime.Hour, firsttime.Minute, firsttime.Second);
+
+        //    endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+        //                          selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+
+        //    string symbol = InstrumentCombo.SelectedItem.ToString();
+        //    //string Mytime = Timecom.SelectedItem.ToString();
+        //    int aggmin = (int)Timecom.SelectedItem;
+        //    var startUtc = startIST.ToUniversalTime();
+        //    var endUtc = endIST.ToUniversalTime();
+
+        //    //int aggmin = 5;
+        //    var con = new NpgsqlConnection(_connectionString);
+        //    await con.OpenAsync();
+
+
+        //    #region
+        //    string sql = @"
+        //    WITH ticks AS (
+        //        SELECT 
+        //            ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+        //            ts,
+        //            price,
+        //            size,
+        //            oi,
+        //            -- Compute tick delta from price movement
+        //            CASE 
+        //                WHEN price > LAG(price) OVER (ORDER BY ts) THEN size
+        //                ELSE 0 
+        //            END AS tick_buy,
+        //            CASE 
+        //                WHEN price < LAG(price) OVER (ORDER BY ts) THEN size
+        //                ELSE 0 
+        //            END AS tick_sell
+        //        FROM raw_ticks
+        //        WHERE instrument_name = @instrumentName
+        //          AND ts BETWEEN @startUtc AND @endUtc
+        //    ),
+
+        //    bucketed AS (
+        //        SELECT 
+        //            (date_trunc('minute', ts_ist) 
+        //             - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))) AS candle_time,
+        //            price, size, oi,
+        //            ts_ist,
+        //            tick_buy,
+        //            tick_sell,
+        //            row_number() OVER (
+        //                PARTITION BY (date_trunc('minute', ts_ist) 
+        //                   - make_interval(mins => EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))
+        //                ORDER BY ts_ist ASC
+        //            ) AS rn_open,
+        //            row_number() OVER (
+        //                PARTITION BY (date_trunc('minute', ts_ist) 
+        //                   - make_interval(mins => EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))
+        //                ORDER BY ts_ist DESC
+        //            ) AS rn_close
+        //        FROM ticks
+        //    ),
+
+        //    candles AS (
+        //        SELECT 
+        //            candle_time,
+        //            MAX(price) FILTER (WHERE rn_open = 1)  AS open_price,
+        //            MAX(price)                             AS high_price,
+        //            MIN(price)                             AS low_price,
+        //            MAX(price) FILTER (WHERE rn_close = 1) AS close_price,
+        //            SUM(size) AS total_volume,
+        //            SUM(tick_buy)  AS total_buy_delta,
+        //            SUM(tick_sell) AS total_sell_delta,
+        //            MAX(oi) AS last_oi
+        //        FROM bucketed
+        //        GROUP BY candle_time
+        //    ),
+
+        //    final AS (
+        //        SELECT
+        //            candle_time,
+        //            open_price, high_price, low_price, close_price,
+        //            total_volume,
+        //            (total_buy_delta - total_sell_delta) AS total_delta,
+        //            total_buy_delta,
+        //            total_sell_delta,
+
+        //            -- Volume and Delta in Lakhs
+        //            total_volume / 100000.0 AS volume_lakh,
+        //            (total_buy_delta - total_sell_delta) / 100000.0 AS delta_lakh,
+
+        //            -- Cumulative CVD in Lakhs
+        //            SUM((total_buy_delta - total_sell_delta) / 100000.0) OVER (ORDER BY candle_time) AS cumulative_cvd_lakh,
+
+        //            -- Open = High/Low indicators
+        //            CASE WHEN open_price = high_price THEN 'Yes' ELSE 'No' END AS open_equals_high,
+        //            CASE WHEN open_price = low_price THEN 'Yes' ELSE 'No' END AS open_equals_low,
+
+        //            -- Candle Strength Percentage (Body as % of Range)
+        //            CASE 
+        //                WHEN (high_price - low_price) > 0 
+        //                THEN ABS(close_price - open_price) * 100.0 / (high_price - low_price)
+        //                ELSE 0 
+        //            END AS candle_strength_pct,
+
+        //            -- Buy/Sell Strength Percentage
+        //            CASE WHEN (total_buy_delta + total_sell_delta) > 0
+        //                 THEN total_buy_delta * 100.0 / (total_buy_delta + total_sell_delta)
+        //                 ELSE 0 END AS buy_strength_pct,
+
+        //            CASE WHEN (total_buy_delta + total_sell_delta) > 0
+        //                 THEN total_sell_delta * 100.0 / (total_buy_delta + total_sell_delta)
+        //                 ELSE 0 END AS sell_strength_pct,
+
+        //            last_oi,
+        //            last_oi - LAG(last_oi) OVER (ORDER BY candle_time) AS oi_change,
+        //            close_price - LAG(close_price) OVER (ORDER BY candle_time) AS price_change,
+
+        //            -- Enhanced Divergence with threshold
+        //            CASE 
+        //                WHEN (close_price > open_price AND (total_buy_delta - total_sell_delta) < -50000) 
+        //                     AND ABS(close_price - open_price) > (high_price - low_price) * 0.3
+        //                    THEN 'Strong Bearish Divergence'
+        //                WHEN (close_price > open_price AND (total_buy_delta - total_sell_delta) < 0) 
+        //                    THEN 'Bearish Divergence'
+        //                WHEN (close_price < open_price AND (total_buy_delta - total_sell_delta) > 50000) 
+        //                     AND ABS(close_price - open_price) > (high_price - low_price) * 0.3
+        //                    THEN 'Strong Bullish Divergence'
+        //                WHEN (close_price < open_price AND (total_buy_delta - total_sell_delta) > 0) 
+        //                    THEN 'Bullish Divergence'
+        //                ELSE 'None'
+        //            END AS divergence,
+
+        //            -- Signal Type
+        //            CASE 
+        //                WHEN last_oi > LAG(last_oi) OVER (ORDER BY candle_time)
+        //                 AND close_price > LAG(close_price) OVER (ORDER BY candle_time)
+        //                    THEN 'LONG BUILD-UP'
+
+        //                WHEN last_oi > LAG(last_oi) OVER (ORDER BY candle_time)
+        //                 AND close_price < LAG(close_price) OVER (ORDER BY candle_time)
+        //                    THEN 'SHORT BUILD-UP'
+
+        //                WHEN last_oi < LAG(last_oi) OVER (ORDER BY candle_time)
+        //                 AND close_price > LAG(close_price) OVER (ORDER BY candle_time)
+        //                    THEN 'SHORT COVERING'
+
+        //                WHEN last_oi < LAG(last_oi) OVER (ORDER BY candle_time)
+        //                 AND close_price < LAG(close_price) OVER (ORDER BY candle_time)
+        //                    THEN 'LONG UNWINDING'
+
+        //                ELSE 'NEUTRAL'
+        //            END AS signal_type,
+
+        //            -- Enhanced Delta Sentiment with threshold
+        //            CASE 
+        //                WHEN (total_buy_delta - total_sell_delta) > 50000 THEN 'Strong Buyers'
+        //                WHEN (total_buy_delta - total_sell_delta) > 10000 THEN 'Buyers Aggressive'
+        //                WHEN (total_buy_delta - total_sell_delta) < -50000 THEN 'Strong Sellers'
+        //                WHEN (total_buy_delta - total_sell_delta) < -10000 THEN 'Sellers Aggressive'
+        //                WHEN (total_buy_delta - total_sell_delta) > 0 THEN 'Mild Buyers'
+        //                WHEN (total_buy_delta - total_sell_delta) < 0 THEN 'Mild Sellers'
+        //                ELSE 'Flat'
+        //            END AS delta_sentiment
+
+        //        FROM candles
+        //    )
+
+        //    SELECT *
+        //    FROM final
+        //    ORDER BY candle_time ASC;";
+        //    #endregion
+        //    var cmd = new NpgsqlCommand(sql, con);
+        //    cmd.Parameters.AddWithValue("instrumentName", symbol);
+        //    cmd.Parameters.AddWithValue("startUtc", startUtc);
+        //    cmd.Parameters.AddWithValue("endUtc", endUtc);
+        //    cmd.Parameters.AddWithValue("aggmin", aggmin);
+
+        //    var dt = new DataTable();
+
+        //    using (var reader = await cmd.ExecuteReaderAsync())
+        //    {
+        //        dt.Load(reader);
+        //    }
+
+        //    // Remove the ReplaceWithLakhFormat call since we're now handling it in SQL
+        //    DataGridCVD.ItemsSource = dt.DefaultView;
+        //    MessageBox.Show("Done");
+        //}
+        private void ReplaceWithLakhFormat(DataTable dataTable)
+        {
+            try
+            {
+                //bool hasVolume = dataTable.Columns.Contains("total_volume");
+                //bool hasDelta = dataTable.Columns.Contains("Delta");
+                //bool hasOI = dataTable.Columns.Contains("OI");
+                //foreach (DataColumn col in dataTable.Columns)
+                //{
+                //    Console.WriteLine($"- {col.ColumnName} ({col.DataType})");
+                //}
+                dataTable.Columns.Add("Volume_Lakh", typeof(string));
+                dataTable.Columns.Add("Delta_Lakh", typeof(string));
+                // Loop through all rows and replace values
+                foreach (DataRow row in dataTable.Rows)
+                {
+                    // Convert and replace Volume
+                    if (row["total_volume"] != null && !Convert.IsDBNull(row["total_volume"]) &&
+                        double.TryParse(row["total_volume"].ToString(), out double volume))
+                    {
+                        row["Volume_Lakh"] = ConvertToLakhFormat(volume);
+                    }
+
+                    // Convert and replace Delta
+                    if (row["total_delta"] != null && !Convert.IsDBNull(row["total_delta"]) &&
+                        double.TryParse(row["total_delta"].ToString(), out double delta))
+                    {
+                        row["Delta_Lakh"] = ConvertToLakhFormat(delta);
+                    }
+
+                    // Convert and replace OI
+                    //if (row["OI"] != null && !Convert.IsDBNull(row["OI"]) &&
+                    //    double.TryParse(row["OI"].ToString(), out double oi))
+                    //{
+                    //    row["OI"] = ConvertToLakhFormat(oi);
+                    //}
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error converting to lakh format: {ex.Message}");
+            }
+        }
+
+        private string ConvertToLakhFormat(double number)
+        {
+            if (number == 0) return "0";
+
+            double lakhValue = number / 100000.0;
+            return $"{lakhValue:0.##}L";
+        }
+        private void ScalpingGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+
+        }
+
+        //{"RELIANCE FUT 25 NOV 25", 10.3},    // Higher weight = more impact on Nifty
+        //{"INFY FUT 25 NOV 25", 3.1},
+        //{"HDFCBANK FUT 25 NOV 25", 7.3},
+        //{"TCS FUT 25 NOV 25", 5.4},
+        //{"ICICIBANK FUT 25 NOV 25", 7.1},
+        //{"RELIANCE FUT 25 NOV 25", 4.2},
+        //{"BHARTIARTL FUT 25 NOV 25", 6.1},
+        //{"ITC FUT 25 NOV 25", 3.5},
+        //{"KOTAKBANK FUT 25 NOV 25", 3.8}
+
+        private async void SectorCVD_Click(object sender, RoutedEventArgs e)
+        {
+            // Linear flow similar to your original structure
+            try
+            {
+                if (Timecom.SelectedItem == null)
+                {
+                    MessageBox.Show("Please select Time Interval.");
+                    return;
+                }
+                if (EndDatePicker.SelectedDate == null)
+                {
+                    MessageBox.Show("Please select End Date.");
+                    return;
+                }
+
+                var selectedDate = EndDatePicker.SelectedDate.Value;
+                var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+                var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+
+                var startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                      firsttime.Hour, firsttime.Minute, firsttime.Second);
+
+                var endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                      selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+
+                int aggmin = (int)Timecom.SelectedItem;
+                var startUtc = startIST.ToUniversalTime();
+                var endUtc = endIST.ToUniversalTime();
+
+                // Build instrument list from sectors dictionary
+                var instrumentList = _sectors.Values.SelectMany(x => x).Distinct().ToList();
+                if (!instrumentList.Any())
+                {
+                    MessageBox.Show("No instruments defined in sectors.");
+                    return;
+                }
+
+                // Build SQL that returns per-instrument bucket aggregates
+                string sql = @"
+WITH tick_data AS (
+    SELECT 
+        instrument_name,
+        ts,
+        ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+        price,
+        size,
+        LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) AS prev_price
+    FROM raw_ticks
+    WHERE ts BETWEEN @startUtc AND @endUtc
+      AND instrument_name = ANY(@instrs)
+),
+
+calculated_deltas AS (
+    SELECT 
+        instrument_name,
+        ts_ist,
+        size,
+        CASE WHEN price > prev_price THEN size ELSE 0 END AS buy,
+        CASE WHEN price < prev_price THEN size ELSE 0 END AS sell
+    FROM tick_data
+    WHERE prev_price IS NOT NULL
+),
+
+bucketed AS (
+    SELECT 
+        instrument_name,
+        (date_trunc('minute', ts_ist) 
+          - make_interval(mins => EXTRACT(MINUTE FROM ts_ist)::int % @aggmin)) AS bucket_time,
+        SUM(size) AS volume,
+        SUM(buy) AS buy_delta,
+        SUM(sell) AS sell_delta,
+        (SUM(buy) - SUM(sell)) AS net_delta
+    FROM calculated_deltas
+    GROUP BY instrument_name, bucket_time
+),
+
+sector_map AS (
+    SELECT * FROM (VALUES
+        
+        -- BANK SECTOR
+        ('HDFCBANK FUT 30 DEC 25', 'BANK'),
+        ('ICICIBANK FUT 30 DEC 25', 'BANK'),
+        ('AXISBANK FUT 30 DEC 25', 'BANK'),
+        ('SBIN FUT 30 DEC 25', 'BANK'),
+        ('KOTAKBANK FUT 30 DEC 25', 'BANK'),
+
+        -- IT SECTOR
+        ('INFY FUT 30 DEC 25', 'IT'),
+        ('TCS FUT 30 DEC 25', 'IT'),
+        ('WIPRO FUT 30 DEC 25', 'IT'),
+        ('HCLTECH FUT 30 DEC 25', 'IT'),
+
+        -- RIL SECTOR
+        ('RELIANCE FUT 30 DEC 25', 'RIL')
+
+    ) AS t(instrument_name, sector)
+),
+
+joined AS (
+    SELECT 
+        b.bucket_time,
+        b.instrument_name,
+        sm.sector,
+        b.volume,
+        b.buy_delta,
+        b.sell_delta,
+        b.net_delta,
+        ROUND(b.net_delta / 100000.0, 3) AS net_delta_lakh
+    FROM bucketed b
+    LEFT JOIN sector_map sm 
+        ON sm.instrument_name = b.instrument_name
+)
+
+SELECT 
+    bucket_time AS ts_bucket,
+
+    -- sector combined deltas in lakhs
+    SUM(CASE WHEN sector = 'BANK' THEN net_delta_lakh ELSE 0 END) AS bank_cvd_lakh,
+    SUM(CASE WHEN sector = 'IT' THEN net_delta_lakh ELSE 0 END) AS it_cvd_lakh,
+    SUM(CASE WHEN sector = 'RIL' THEN net_delta_lakh ELSE 0 END) AS ril_cvd_lakh,
+
+    -- full market CVD in lakhs
+    SUM(net_delta_lakh) AS total_market_cvd_lakh
+
+FROM joined
+GROUP BY bucket_time
+ORDER BY bucket_time;
+";
+
+
+
+                DataTable dt = new DataTable();
+                using (var con = new NpgsqlConnection(_connectionString))
+                {
+                    await con.OpenAsync();
+                    using (var cmd = new NpgsqlCommand(sql, con))
+                    {
+                        // pass array parameter for instrument_name = ANY(@instrs)
+                        cmd.Parameters.AddWithValue("startUtc", startUtc);
+                        cmd.Parameters.AddWithValue("endUtc", endUtc);
+                        cmd.Parameters.AddWithValue("aggmin", aggmin);
+                        // Postgres expects text[] type for arrays; Npgsql will infer
+                        cmd.Parameters.AddWithValue("instrs", instrumentList.ToArray());
+
+                        using (var reader = await cmd.ExecuteReaderAsync())
+                        {
+                            dt.Load(reader);
+                        }
+                    }
+                }
+
+                // Process the returned per-instrument buckets into sector aggregates + cumulative
+                var finalList = ProcessSectorAggregation(dt, aggmin);
+                dgSectorCVD.ItemsSource = finalList;
+                MessageBox.Show($"Data loaded for {finalList.Count} time buckets");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Error: " + ex.Message);
+            }
+        }
+        private readonly Dictionary<string, List<string>> _sectors = new Dictionary<string, List<string>>
+        {
+            { "BANK", new List<string> {
+                "HDFCBANK FUT 30 DEC 25",
+                "ICICIBANK FUT 30 DEC 25",
+                "AXISBANK FUT 30 DEC 25",
+                "SBIN FUT 30 DEC 25",
+                "KOTAKBANK FUT 30 DEC 25"
+            }},
+
+            { "IT", new List<string> {
+                "INFY FUT 30 DEC 25",
+                "TCS FUT 30 DEC 25",
+                "WIPRO FUT 30 DEC 25",
+                "HCLTECH FUT 30 DEC 25"
+            }},
+
+            { "RIL", new List<string> {
+                "RELIANCE FUT 30 DEC 25"
+            }}
+        };
+
+        // Sector weights for final weighted score (change here to tune)
+        private readonly Dictionary<string, double> _sectorWeights = new Dictionary<string, double>
+        {
+            { "BANK", 0.35 },
+            { "IT", 0.13 },
+            { "RIL", 0.10 }
+        };
+
+        // Model for DataGrid
+        public class SectorCVDData
+        {
+            public DateTime BucketTime { get; set; }
+
+            public double BankDelta { get; set; }
+            public double ITDelta { get; set; }
+            public double EnergyDelta { get; set; }
+
+            public double BankCVD { get; set; }
+            public double ITCVD { get; set; }
+            public double EnergyCVD { get; set; }
+
+            public double WeightedScore { get; set; }
+            public string Signal { get; set; }
+        }
+
+
+        private List<SectorCVDData> ProcessSectorAggregation(DataTable dt, int aggmin)
+        {
+            var result = new List<SectorCVDData>();
+
+            // cumulative tracking
+            double cumBank = 0;
+            double cumIT = 0;
+            double cumEnergy = 0;
+
+            // get all timestamps sorted
+            var times = dt.AsEnumerable()
+                          .Select(r => r.Field<DateTime>("ts_bucket"))
+                          .Distinct()
+                          .OrderBy(t => t)
+                          .ToList();
+
+            foreach (var t in times)
+            {
+                var row = dt.AsEnumerable().First(r => r.Field<DateTime>("ts_bucket") == t);
+
+                // extract sector deltas (already in lakh from query)
+                double bankDelta = row["bank_cvd_lakh"] == DBNull.Value ? 0 : Convert.ToDouble(row["bank_cvd_lakh"]);
+                double itDelta = row["it_cvd_lakh"] == DBNull.Value ? 0 : Convert.ToDouble(row["it_cvd_lakh"]);
+                double energyDelta = row["energy_cvd_lakh"] == DBNull.Value ? 0 : Convert.ToDouble(row["energy_cvd_lakh"]);
+
+                // cumulative
+                cumBank += bankDelta;
+                cumIT += itDelta;
+                cumEnergy += energyDelta;
+
+                var item = new SectorCVDData
+                {
+                    BucketTime = t,
+
+                    BankDelta = Math.Round(bankDelta, 2),
+                    ITDelta = Math.Round(itDelta, 2),
+                    EnergyDelta = Math.Round(energyDelta, 2),
+
+                    BankCVD = Math.Round(cumBank, 2),
+                    ITCVD = Math.Round(cumIT, 2),
+                    EnergyCVD = Math.Round(cumEnergy, 2)
+                };
+
+                // scoring & signal
+                item.WeightedScore = CalculateWeightedScoreForSectors(item);
+                item.Signal = DetermineSignalForSectors(item);
+
+                result.Add(item);
+            }
+
+            return result;
+        }
+        
+
+
+        // Normalize and combine sector CVD into weighted score (0..100)
+        private double CalculateWeightedScoreForSectors(SectorCVDData data)
+        {
+            // Use tanh normalization for stability and scale
+            double normBank = NormalizeTanh(data.BankCVD);
+            double normIt = NormalizeTanh(data.ITCVD);
+            double normRil = NormalizeTanh(data.EnergyDelta);
+
+            double score =
+                (_sectorWeights.GetValueOrDefault("BANK", 0.0) * normBank) +
+                (_sectorWeights.GetValueOrDefault("IT", 0.0) * normIt) +
+                (_sectorWeights.GetValueOrDefault("RIL", 0.0) * normRil);
+
+            // score is in -1..1 range (because tanh). Convert to 0..100
+            double scaled = ((score + 1.0) / 2.0) * 100.0;
+            return Math.Round(scaled, 2);
+        }
+
+        // simple tanh normalization with a scale factor (adjust scaleFactor to control sensitivity)
+        private double NormalizeTanh(double x, double scaleFactor = 50000.0)
+        {
+            // Avoid overflow; x / scaleFactor roughly puts typical CVD into reasonable range
+            return Math.Tanh(x / scaleFactor);
+        }
+
+        // Determine Buy/Sell signal based on sector cumulative signs & relative strength
+        private string DetermineSignalForSectors(SectorCVDData d)
+        {
+            // Strong if both bank and it are aligned
+            if (d.BankCVD > 0 && d.ITCVD > 0) return "Strong Buy";
+            if (d.BankCVD < 0 && d.ITCVD < 0) return "Strong Sell";
+
+            // If bank dominates but IT opposite
+            if (d.BankCVD > 0 && d.ITCVD < 0) return "Bank Buy (Mixed)";
+            if (d.BankCVD < 0 && d.ITCVD > 0) return "Bank Sell (Mixed)";
+
+            // Fallback to RIL bias if both bank & it neutral
+            if (Math.Abs(d.BankCVD) < 1e-9 && Math.Abs(d.ITCVD) < 1e-9)
+            {
+                if (d.EnergyDelta > 0) return "RIL Buy";
+                if (d.EnergyDelta < 0) return "RIL Sell";
+            }
+
             return "Neutral";
         }
 
-        public string CheckOpenHighLow(MinuteRow firstMinuteOfDay)
+
+        // small extension to fetch value or default
+        
+
+        private readonly Dictionary<string, double> _stockWeightages = new Dictionary<string, double>
+{
+    {"RELIANCE FUT 30 DEC 25", 10.3},    // Higher weight = more impact on Nifty
+    {"INFY FUT 30 DEC 25", 3.1},
+    {"HDFCBANK FUT 30 DEC 25", 7.3},
+    {"TCS FUT 30 DEC 25", 5.4},
+    {"ICICIBANK FUT 30 DEC 25", 7.1},
+    
+};
+        
+
+        private async void Nifty_Click(object sender, RoutedEventArgs e)
         {
-            if (firstMinuteOfDay == null) return "Normal";
-            if (Math.Abs(firstMinuteOfDay.Open - firstMinuteOfDay.High) < 1e-6) return "Open=High";
-            if (Math.Abs(firstMinuteOfDay.Open - firstMinuteOfDay.Low) < 1e-6) return "Open=Low";
-            return "Normal";
+            if (Timecom.SelectedItem == null)
+            {
+                MessageBox.Show("Please select Time Interval.");
+                return;
+            }
+            if (EndDatePicker.SelectedDate == null)
+            {
+                MessageBox.Show("Please select End Date.");
+                return;
+            }
+
+            var selectedDate = EndDatePicker.SelectedDate.Value;
+            var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+            var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+
+            var startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                  firsttime.Hour, firsttime.Minute, firsttime.Second);
+
+            var endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                  selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+
+            int aggmin = (int)Timecom.SelectedItem;
+            var startUtc = startIST.ToUniversalTime();
+            var endUtc = endIST.ToUniversalTime();
+
+            var con = new NpgsqlConnection(_connectionString);
+            await con.OpenAsync();
+
+
+            string sql = @"
+            WITH tick_data AS (
+                SELECT 
+                    instrument_name,
+                    ts,
+                    ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+                    price,
+                    size,
+                    LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) AS prev_price
+                FROM raw_ticks
+                WHERE ts BETWEEN @startUtc AND @endUtc
+                  AND instrument_name IN (" + string.Join(",", _stockWeightages.Keys.Select(k => $"'{k}'")) + @")
+            ),
+
+            calculated_deltas AS (
+                SELECT 
+                    instrument_name,
+                    ts,
+                    ts_ist,
+                    size,
+                    CASE 
+                        WHEN price > prev_price THEN size
+                        ELSE 0 
+                    END AS tick_buy,
+                    CASE 
+                        WHEN price < prev_price THEN size
+                        ELSE 0 
+                    END AS tick_sell
+                FROM tick_data
+                WHERE prev_price IS NOT NULL
+            ),
+
+            bucketed_data AS (
+                SELECT 
+                    instrument_name,
+                    (date_trunc('minute', ts_ist) 
+                     - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))) AS bucket_time,
+                    SUM(size) AS volume,
+                    SUM(tick_buy) AS buy_delta,
+                    SUM(tick_sell) AS sell_delta
+                FROM calculated_deltas
+                GROUP BY instrument_name, bucket_time
+            ),
+
+            aggregated_data AS (
+                SELECT 
+                    bucket_time,
+                    SUM(volume) AS total_volume,
+                    SUM(buy_delta) AS total_buy_delta,
+                    SUM(sell_delta) AS total_sell_delta,
+                    (SUM(buy_delta) - SUM(sell_delta)) AS net_delta
+                FROM bucketed_data
+                GROUP BY bucket_time
+            ),
+
+            cumulative_data AS (
+                SELECT 
+                    bucket_time,
+                    total_volume,
+                    total_buy_delta,
+                    total_sell_delta,
+                    net_delta,
+                    SUM(net_delta) OVER (ORDER BY bucket_time) AS cumulative_delta
+                FROM aggregated_data
+            )
+
+            SELECT 
+                bucket_time AS BlockTime,
+                total_volume / 100000.0 AS VolumeLakh,
+                net_delta / 100000.0 AS DeltaLakh,
+                cumulative_delta / 100000.0 AS CumCVDLakh,
+                total_buy_delta / 100000.0 AS BuyLakh,
+                total_sell_delta / 100000.0 AS SellLakh
+            FROM cumulative_data
+            ORDER BY bucket_time ASC;";
+
+            var cmd = new NpgsqlCommand(sql, con);
+            cmd.Parameters.AddWithValue("startUtc", startUtc);
+            cmd.Parameters.AddWithValue("endUtc", endUtc);
+            cmd.Parameters.AddWithValue("aggmin", aggmin);
+
+
+            //var cmd = new NpgsqlCommand(sql, con);
+            //cmd.Parameters.AddWithValue("startIst", startIST);  // Use IST directly
+            //cmd.Parameters.AddWithValue("endIst", endIST);      // Use IST directly
+            //cmd.Parameters.AddWithValue("aggmin", aggmin);
+
+            var dt = new DataTable();
+            using (var reader = await cmd.ExecuteReaderAsync())
+            {
+                dt.Load(reader);
+            }
+
+            // Calculate weighted scores and create final data
+            var finalData = CalculateWeightedScores(dt);
+            DataGrid1.ItemsSource = finalData;
+            MessageBox.Show($"Data loaded for {finalData.Count} time buckets");
         }
 
-        public (string near52, double distancePct) Check52Week(List<DailyStockRow> history, double currentPrice)
+        private List<StockAggregateData> CalculateWeightedScores(DataTable dt)
         {
-            if (history == null || history.Count == 0) return ("None", 0);
-            var last365 = history.OrderByDescending(d => d.DayDate).Take(365).ToList();
-            double hi52 = last365.Max(d => d.High);
-            double lo52 = last365.Min(d => d.Low);
-            if (currentPrice >= hi52) return ("BreakHigh", 100.0 * (currentPrice - hi52) / hi52);
-            if (currentPrice <= lo52) return ("BreakLow", 100.0 * (lo52 - currentPrice) / lo52);
-            double dist = Math.Min(100.0 * (hi52 - currentPrice) / hi52, 100.0 * (currentPrice - lo52) / lo52);
-            return ("None", dist);
+            var result = new List<StockAggregateData>();
+
+            // Track min/max values for normalization
+            double maxVolume = 0, maxDelta = 0, maxCumCVD = 0;
+            double minVolume = double.MaxValue, minDelta = double.MaxValue, minCumCVD = double.MaxValue;
+
+            // First pass: find min/max values for normalization
+            foreach (DataRow row in dt.Rows)
+            {
+                var volumeLakh = Math.Abs(Convert.ToDouble(row["VolumeLakh"]));
+                var deltaLakh = Convert.ToDouble(row["DeltaLakh"]);
+                var cumCVDLakh = Convert.ToDouble(row["CumCVDLakh"]);
+
+                maxVolume = Math.Max(maxVolume, volumeLakh);
+                maxDelta = Math.Max(maxDelta, Math.Abs(deltaLakh));
+                maxCumCVD = Math.Max(maxCumCVD, Math.Abs(cumCVDLakh));
+
+                minVolume = Math.Min(minVolume, volumeLakh);
+                minDelta = Math.Min(minDelta, Math.Abs(deltaLakh));
+                minCumCVD = Math.Min(minCumCVD, Math.Abs(cumCVDLakh));
+            }
+
+            // Ensure we don't divide by zero
+            maxVolume = Math.Max(maxVolume, 1);
+            maxDelta = Math.Max(maxDelta, 1);
+            maxCumCVD = Math.Max(maxCumCVD, 1);
+
+            // Second pass: calculate scores
+            foreach (DataRow row in dt.Rows)
+            {
+                var blockTime = Convert.ToDateTime(row["BlockTime"]);
+                var volumeLakh = Convert.ToDouble(row["VolumeLakh"]);
+                var deltaLakh = Convert.ToDouble(row["DeltaLakh"]);
+                var cumCVDLakh = Convert.ToDouble(row["CumCVDLakh"]);
+                var buyLakh = Convert.ToDouble(row["BuyLakh"]);
+                var sellLakh = Convert.ToDouble(row["SellLakh"]);
+
+                // Calculate weighted score (0-100)
+                double weightedScore = CalculateWeightedScore(deltaLakh, cumCVDLakh, volumeLakh,
+                                                             maxDelta, maxCumCVD, maxVolume);
+
+                string signal = DetermineSignal(deltaLakh, cumCVDLakh);
+                string alert = GenerateAlert(deltaLakh, cumCVDLakh, volumeLakh);
+
+                result.Add(new StockAggregateData
+                {
+                    BlockTime = blockTime,
+                    VolumeLakh = Math.Round(volumeLakh, 2),
+                    DeltaLakh = Math.Round(deltaLakh, 2),
+                    CumCVDLakh = Math.Round(cumCVDLakh, 2),
+                    WeightedScore = weightedScore,
+                    Signal = signal,
+                    Alert = alert
+                });
+            }
+
+            return result;
         }
 
-        public (double support, int supportHits, double resistance, int resistanceHits) ComputeSupportResistance(List<DailyStockRow> history, double tolerancePct = 0.5)
+        private double CalculateWeightedScore(double deltaLakh, double cumCVDLakh, double volumeLakh,
+                                            double maxDelta, double maxCumCVD, double maxVolume)
         {
-            var last90 = history.OrderByDescending(d => d.DayDate).Take(90).ToList();
-            if (!last90.Any()) return (0, 0, 0, 0);
-            var highs = last90.OrderByDescending(d => d.High).Take(3).Select(d => d.High).ToList();
-            var lows = last90.OrderBy(d => d.Low).Take(3).Select(d => d.Low).ToList();
-            double resistance = highs.Average();
-            double support = lows.Average();
-            int resHits = last90.Count(d => Math.Abs((d.Close - resistance) / resistance * 100.0) <= tolerancePct);
-            int supHits = last90.Count(d => Math.Abs((d.Close - support) / support * 100.0) <= tolerancePct);
-            return (support, supHits, resistance, resHits);
+            // Calculate base scores (0-100 range for each component)
+
+            // Delta Score: Normalize between -maxDelta to +maxDelta to 0-100
+            // Positive delta = higher score, Negative delta = lower score
+            double deltaScore = NormalizeTo100(deltaLakh, -maxDelta, maxDelta);
+
+            // CVD Score: Normalize between -maxCumCVD to +maxCumCVD to 0-100
+            double cvdScore = NormalizeTo100(cumCVDLakh, -maxCumCVD, maxCumCVD);
+
+            // Volume Score: Normalize between 0 to maxVolume to 0-100
+            double volumeScore = NormalizeTo100(Math.Abs(volumeLakh), 0, maxVolume);
+
+            // Calculate total weightage from all stocks
+            double totalWeightage = _stockWeightages.Values.Sum();
+
+            // Calculate average weightage impact (normalize to 0-1 range)
+            double avgWeightage = totalWeightage / (_stockWeightages.Count * 10.0); // Normalize for scoring
+
+            // Weighted composite score (0-100)
+            // Delta (40%), CVD (30%), Volume (30%)
+            double compositeScore = (deltaScore * 0.4) + (cvdScore * 0.3) + (volumeScore * 0.3);
+
+            // Apply stock weightage multiplier 
+            // Higher average weight = higher score impact (0.7 to 1.3 multiplier)
+            double weightageMultiplier = 0.7 + (avgWeightage * 0.6);
+
+            double finalScore = compositeScore * weightageMultiplier;
+
+            // Ensure score stays within 0-100 range
+            return Math.Max(0, Math.Min(100, Math.Round(finalScore, 2)));
         }
 
-        public (int volumeScore, int cvdScore, int breakoutScore) ComputeScores(double volumeRatio, double rollingCvd, double cvdSlope, bool isFirstMinBreak, bool isFiveMinBreak)
+        private double NormalizeTo100(double value, double min, double max)
         {
-            int vScore = 0, cScore = 0, bScore = 0;
-            if (volumeRatio >= 2.0) vScore = 3;
-            else if (volumeRatio >= 1.5) vScore = 2;
-            else if (volumeRatio >= 1.2) vScore = 1;
+            if (max - min == 0) return 50; // Neutral score if no range
 
-            if (rollingCvd > 50000 && cvdSlope > 3000) cScore = 3;
-            else if (rollingCvd > 20000 && cvdSlope > 1000) cScore = 2;
-            else if (Math.Abs(rollingCvd) > 5000) cScore = 1;
-
-            if (isFirstMinBreak) bScore += 2;
-            if (isFiveMinBreak) bScore += 3;
-            return (vScore, cScore, bScore);
+            double normalized = ((value - min) / (max - min)) * 100;
+            return Math.Max(0, Math.Min(100, normalized));
         }
 
-        public bool CheckFirstMinuteBreakout(List<MinuteRow> minutes)
+        private string DetermineSignal(double deltaLakh, double cumCVDLakh)
         {
-            if (minutes == null || minutes.Count < 2) return false;
-            var first = minutes.First();
-            return minutes.Skip(1).Take(4).Any(m => m.Close > first.High) || minutes.Skip(1).Take(4).Any(m => m.Close < first.Low);
+            // More sensitive thresholds for better signal detection
+            if (deltaLakh > 25 && cumCVDLakh > 50)
+                return "Strong Bullish";
+            else if (deltaLakh > 10)
+                return "Bullish";
+            else if (deltaLakh < -25 && cumCVDLakh < -50)
+                return "Strong Bearish";
+            else if (deltaLakh < -10)
+                return "Bearish";
+            else if (Math.Abs(deltaLakh) < 5)
+                return "Neutral";
+            else
+                return "Mixed";
         }
 
-        public bool CheckFiveMinuteBreakout(List<MinuteRow> minutes)
+        private string GenerateAlert(double deltaLakh, double cumCVDLakh, double volumeLakh)
         {
-            if (minutes == null || minutes.Count < 5) return false;
-            var first = minutes.First();
-            return minutes.Take(5).Any(m => m.High > first.High) || minutes.Take(5).Any(m => m.Low < first.Low);
+            var alerts = new List<string>();
+
+            if (deltaLakh > 50) alerts.Add("Heavy Buying");
+            else if (deltaLakh < -50) alerts.Add("Heavy Selling");
+
+            if (cumCVDLakh > 200) alerts.Add("Strong Bullish Trend");
+            else if (cumCVDLakh < -200) alerts.Add("Strong Bearish Trend");
+
+            if (volumeLakh > 500) alerts.Add("High Volume Activity");
+
+            return alerts.Count > 0 ? string.Join(", ", alerts) : "Normal";
         }
+
+        // Data class for binding
+        public class StockAggregateData
+        {
+            public DateTime BlockTime { get; set; }
+            public double VolumeLakh { get; set; }
+            public double DeltaLakh { get; set; }
+            public double CumCVDLakh { get; set; }
+            public double WeightedScore { get; set; }
+            public string Signal { get; set; }
+            public string Alert { get; set; }
+        }
+
+        private async void Button_Click(object sender, RoutedEventArgs e)
+        {
+            //InstrumentCombo.ItemsSource = null;
+            InstrumentCombo.ItemsSource = null;
+            InstrumentCombo.Items.Clear();   // Important
+            //MyComboBox.ItemsSource = values;
+
+            if (EndDatePicker.SelectedDate == null)
+            {
+                MessageBox.Show("Please select End Date.");
+                return;
+            }
+            var selectedDate = EndDatePicker.SelectedDate.Value;
+            selectedDate = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day);
+            //selectedDate = selectedDate.ToString(par);
+            try
+            {
+                string query = @"
+                    SELECT DISTINCT instrument_name
+                    FROM public.raw_ticks
+                    WHERE ts::date = @date
+                    ORDER BY instrument_name;
+                ";
+
+                List<string> values = new List<string>();
+
+                using (var conn = new NpgsqlConnection(_connectionString))
+                {
+                    conn.Open();
+
+                    using (var cmd = new NpgsqlCommand(query, conn))
+                    {
+                        cmd.Parameters.AddWithValue("@date", selectedDate.Date);
+
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                values.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+
+                InstrumentCombo.ItemsSource = values;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Database Error");
+            }
+            MessageBox.Show("Done");
+            await Task.CompletedTask;
+        }
+        //ScanDeltaSpikes_Click
+        private async void ScanDeltaSpikes_Click(object sender, RoutedEventArgs e)
+        {
+            if (Timecom.SelectedItem == null)
+            {
+                MessageBox.Show("Please select Time Interval.");
+                return;
+            }
+            if (EndDatePicker.SelectedDate == null)
+            {
+                MessageBox.Show("Please select End Date.");
+                return;
+            }
+
+            var selectedDate = EndDatePicker.SelectedDate.Value;
+            var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+            var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+
+            var startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                  firsttime.Hour, firsttime.Minute, firsttime.Second);
+            var endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                  selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+
+            int aggmin = (int)Timecom.SelectedItem;
+            var startUtc = startIST.ToUniversalTime();
+            var endUtc = endIST.ToUniversalTime();
+
+            var con = new NpgsqlConnection(_connectionString);
+            await con.OpenAsync();
+
+            // FIXED QUERY - No window functions inside aggregates
+            string testQuery = @"
+-- STEP 1: First calculate tick-by-tick delta
+WITH tick_delta AS (
+    SELECT 
+        ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+        instrument_name,
+        price,
+        size,
+        CASE 
+            WHEN price > LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN size
+            ELSE 0 
+        END AS buy_size,
+        CASE 
+            WHEN price < LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN size
+            ELSE 0 
+        END AS sell_size
+    FROM raw_ticks
+    WHERE ts BETWEEN @startUtc AND @endUtc
+      AND instrument_name IN (
+          SELECT DISTINCT instrument_name 
+          FROM raw_ticks 
+          WHERE ts BETWEEN @startUtc AND @endUtc 
+          ORDER BY instrument_name
+          LIMIT 5  -- Test with only 5 stocks
+      )
+),
+
+-- STEP 2: Now aggregate by time interval
+aggregated_delta AS (
+    SELECT 
+        instrument_name,
+        (date_trunc('minute', ts_ist) 
+            - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))) AS candle_time,
+        MAX(price) AS high_price,
+        MIN(price) AS low_price,
+        AVG(price) AS avg_price,
+        SUM(size) AS total_volume,
+        SUM(buy_size) AS buy_volume,
+        SUM(sell_size) AS sell_volume,
+        (SUM(buy_size) - SUM(sell_size)) AS net_delta,
+        (SUM(buy_size) - SUM(sell_size)) / 100000.0 AS net_delta_lakh
+    FROM tick_delta
+    GROUP BY instrument_name, 
+            (date_trunc('minute', ts_ist) 
+             - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin)))
+)
+
+-- STEP 3: Show results
+SELECT 
+    instrument_name,
+    candle_time,
+    avg_price,
+    high_price,
+    low_price,
+    total_volume,
+    buy_volume,
+    sell_volume,
+    net_delta,
+    net_delta_lakh,
+    CASE 
+        WHEN net_delta_lakh > 0 THEN 'BUYING'
+        WHEN net_delta_lakh < 0 THEN 'SELLING'
+        ELSE 'NEUTRAL'
+    END AS direction
+FROM aggregated_delta
+WHERE ABS(net_delta_lakh) > 0.5
+ORDER BY instrument_name, candle_time
+LIMIT 50;
+";
+
+            try
+            {
+                var cmd = new NpgsqlCommand(testQuery, con);
+                cmd.Parameters.AddWithValue("startUtc", startUtc);
+                cmd.Parameters.AddWithValue("endUtc", endUtc);
+                cmd.Parameters.AddWithValue("aggmin", aggmin);
+
+                cmd.CommandTimeout = 60;
+
+                var dataTable = new DataTable();
+                using (var reader = await cmd.ExecuteReaderAsync())
+                {
+                    dataTable.Load(reader);
+                }
+
+                if (dataTable.Rows.Count > 0)
+                {
+                    MessageBox.Show($"SUCCESS! Found {dataTable.Rows.Count} delta entries.\n" +
+                                  $"First stock: {dataTable.Rows[0]["instrument_name"]}\n" +
+                                  $"Sample delta: {dataTable.Rows[0]["net_delta_lakh"]} lakh");
+
+                    // Now run the cup pattern query
+                    await RunCupPatternQuery(con, startUtc, endUtc, aggmin);
+                }
+                else
+                {
+                    MessageBox.Show("No delta data found. Try:\n" +
+                                  "1. Check if selected date is a trading day\n" +
+                                  "2. Time range should be between 9:15 AM to 3:30 PM\n" +
+                                  "3. Database might not have data for selected period");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error in test query: {ex.Message}");
+            }
+            finally
+            {
+                con.Close();
+            }
+        }
+
+        private async Task RunCupPatternQuery(NpgsqlConnection con, DateTime startUtc, DateTime endUtc, int aggmin)
+        {
+            string cupPatternQuery = @"
+-- STEP 1: Calculate tick delta first
+WITH tick_data AS (
+    SELECT 
+        ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+        instrument_name,
+        price,
+        size,
+        CASE 
+            WHEN price > LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN size
+            ELSE 0 
+        END AS buy_size,
+        CASE 
+            WHEN price < LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN size
+            ELSE 0 
+        END AS sell_size
+    FROM raw_ticks
+    WHERE ts BETWEEN @startUtc AND @endUtc
+),
+
+-- STEP 2: Aggregate by time interval
+candle_data AS (
+    SELECT 
+        instrument_name,
+        (date_trunc('minute', ts_ist) 
+            - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))) AS candle_time,
+        MAX(price) AS high_price,
+        MIN(price) AS low_price,
+        AVG(price) AS avg_price,
+        SUM(buy_size) AS buy_volume,
+        SUM(sell_size) AS sell_volume,
+        (SUM(buy_size) - SUM(sell_size)) AS net_delta,
+        (SUM(buy_size) - SUM(sell_size)) / 100000.0 AS net_delta_lakh,
+        SUM(size) AS total_volume
+    FROM tick_data
+    GROUP BY instrument_name, 
+            (date_trunc('minute', ts_ist) 
+             - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin)))
+),
+
+-- STEP 3: Calculate rolling statistics for each stock
+rolling_stats AS (
+    SELECT 
+        *,
+        -- Calculate rolling average delta (last 20 periods)
+        AVG(ABS(net_delta_lakh)) OVER (
+            PARTITION BY instrument_name 
+            ORDER BY candle_time 
+            ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
+        ) AS rolling_avg_delta,
+        
+        -- Calculate rolling standard deviation (last 20 periods)
+        STDDEV(ABS(net_delta_lakh)) OVER (
+            PARTITION BY instrument_name 
+            ORDER BY candle_time 
+            ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
+        ) AS rolling_stddev_delta,
+        
+        -- Calculate rolling average volume
+        AVG(total_volume) OVER (
+            PARTITION BY instrument_name 
+            ORDER BY candle_time 
+            ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
+        ) AS rolling_avg_volume,
+        
+        ROW_NUMBER() OVER (PARTITION BY instrument_name ORDER BY candle_time) AS candle_num
+    FROM candle_data
+),
+
+-- STEP 4: Identify spikes dynamically
+spikes AS (
+    SELECT 
+        instrument_name,
+        candle_time,
+        avg_price,
+        high_price,
+        low_price,
+        net_delta_lakh,
+        total_volume,
+        rolling_avg_delta,
+        rolling_stddev_delta,
+        rolling_avg_volume,
+        
+        -- Calculate z-score for delta (how many standard deviations from mean)
+        CASE 
+            WHEN rolling_stddev_delta > 0 
+            THEN ABS(net_delta_lakh - rolling_avg_delta) / rolling_stddev_delta
+            ELSE 0 
+        END AS delta_zscore,
+        
+        -- Calculate volume ratio (current volume vs average)
+        CASE 
+            WHEN rolling_avg_volume > 0 
+            THEN total_volume / rolling_avg_volume
+            ELSE 1 
+        END AS volume_ratio,
+        
+        -- Dynamic spike detection flags
+        CASE 
+            -- Condition 1: Z-score > 2 (statistically significant)
+            WHEN ABS(net_delta_lakh - rolling_avg_delta) / NULLIF(rolling_stddev_delta, 0) > 2
+            -- Condition 2: Absolute delta is at least 0.5 lakh (minimum threshold)
+            AND ABS(net_delta_lakh) >= 0.5
+            -- Condition 3: Volume is above average (confirmation)
+            AND total_volume >= rolling_avg_volume * 0.8
+            THEN TRUE
+            -- Alternative: Very high absolute delta (> 5 lakh) regardless of stats
+            WHEN ABS(net_delta_lakh) >= 5.0
+            THEN TRUE
+            ELSE FALSE
+        END AS is_spike,
+        
+        -- Spike strength score (0-10)
+        CASE 
+            WHEN ABS(net_delta_lakh - rolling_avg_delta) / NULLIF(rolling_stddev_delta, 0) > 3 THEN 10
+            WHEN ABS(net_delta_lakh - rolling_avg_delta) / NULLIF(rolling_stddev_delta, 0) > 2.5 THEN 8
+            WHEN ABS(net_delta_lakh - rolling_avg_delta) / NULLIF(rolling_stddev_delta, 0) > 2 THEN 6
+            WHEN ABS(net_delta_lakh) >= 3.0 THEN 5
+            WHEN ABS(net_delta_lakh) >= 2.0 THEN 4
+            WHEN ABS(net_delta_lakh) >= 1.0 THEN 3
+            ELSE 0
+        END AS spike_strength,
+        
+        ROW_NUMBER() OVER (PARTITION BY instrument_name ORDER BY candle_time) AS row_num
+        
+    FROM rolling_stats
+    WHERE candle_num > 20  -- Need at least 20 periods for statistics
+),
+
+-- STEP 5: Filter only spikes
+filtered_spikes AS (
+    SELECT 
+        instrument_name,
+        candle_time,
+        avg_price,
+        high_price,
+        low_price,
+        net_delta_lakh,
+        delta_zscore,
+        volume_ratio,
+        spike_strength
+    FROM spikes
+    WHERE is_spike = TRUE
+),
+
+-- STEP 6: Find pairs of spikes for same stock
+spike_pairs AS (
+    SELECT 
+        s1.instrument_name,
+        s1.candle_time AS time_1,
+        s1.avg_price AS price_1,
+        s1.net_delta_lakh AS delta_1,
+        s1.spike_strength AS strength_1,
+        s1.high_price AS high_1,
+        s1.low_price AS low_1,
+        s1.delta_zscore AS zscore_1,
+        
+        s2.candle_time AS time_2,
+        s2.avg_price AS price_2,
+        s2.net_delta_lakh AS delta_2,
+        s2.spike_strength AS strength_2,
+        s2.delta_zscore AS zscore_2
+    FROM filtered_spikes s1
+    JOIN filtered_spikes s2 
+        ON s1.instrument_name = s2.instrument_name
+        AND s2.candle_time > s1.candle_time
+        AND s2.candle_time <= s1.candle_time + INTERVAL '120 minutes'
+        -- Second spike has higher absolute delta OR higher z-score
+        AND (ABS(s2.net_delta_lakh) > ABS(s1.net_delta_lakh) OR s2.delta_zscore > s1.delta_zscore)
+        -- Same direction
+        AND s1.net_delta_lakh * s2.net_delta_lakh > 0
+),
+
+-- STEP 7: Find lowest price between spikes
+spikes_with_trough AS (
+    SELECT 
+        sp.*,
+        -- Find trough price between spikes
+        (
+            SELECT MIN(low_price)
+            FROM candle_data cd
+            WHERE cd.instrument_name = sp.instrument_name
+              AND cd.candle_time > sp.time_1
+              AND cd.candle_time < sp.time_2
+        ) AS trough_price,
+        
+        -- Find average price between spikes
+        (
+            SELECT AVG(avg_price)
+            FROM candle_data cd
+            WHERE cd.instrument_name = sp.instrument_name
+              AND cd.candle_time > sp.time_1
+              AND cd.candle_time < sp.time_2
+        ) AS avg_price_between
+    FROM spike_pairs sp
+),
+
+-- STEP 8: Calculate metrics
+calculated_metrics AS (
+    SELECT 
+        *,
+        -- Price difference percentage
+        ABS(price_1 - price_2) * 100.0 / price_1 AS price_diff_pct,
+        
+        -- Time gap in minutes
+        EXTRACT(EPOCH FROM (time_2 - time_1)) / 60 AS minutes_gap,
+        
+        -- Correction percentage (if trough exists)
+        CASE 
+            WHEN trough_price IS NOT NULL 
+            THEN (price_1 - trough_price) * 100.0 / price_1
+            ELSE 0 
+        END AS correction_pct,
+        
+        -- Delta increase percentage
+        CASE 
+            WHEN delta_1 != 0 
+            THEN ((delta_2 - delta_1) / ABS(delta_1)) * 100
+            ELSE 0 
+        END AS delta_inc_pct,
+        
+        -- Strength increase
+        strength_2 - strength_1 AS strength_increase,
+        
+        -- Z-score increase
+        zscore_2 - zscore_1 AS zscore_increase
+    FROM spikes_with_trough
+    WHERE trough_price IS NOT NULL
+),
+
+-- STEP 9: Validate patterns with dynamic thresholds
+valid_patterns AS (
+    SELECT 
+        instrument_name,
+        time_1,
+        price_1,
+        delta_1,
+        strength_1,
+        zscore_1,
+        trough_price,
+        correction_pct,
+        time_2,
+        price_2,
+        delta_2,
+        strength_2,
+        zscore_2,
+        price_diff_pct,
+        minutes_gap,
+        delta_inc_pct,
+        strength_increase,
+        zscore_increase,
+        
+        -- Dynamic validation based on spike strength
+        CASE 
+            -- For strong spikes (strength >= 6), allow wider price match
+            WHEN strength_1 >= 6 AND strength_2 >= 6 
+            THEN price_diff_pct <= 0.75  -- 0.75% for strong spikes
+            ELSE price_diff_pct <= 0.5   -- 0.5% for regular spikes
+        END AS price_match_ok,
+        
+        -- Time gap varies based on spike strength
+        CASE 
+            WHEN strength_1 >= 8 AND strength_2 >= 8
+            THEN minutes_gap BETWEEN 10 AND 180  -- 10 min to 3 hours for very strong spikes
+            ELSE minutes_gap BETWEEN 15 AND 120  -- 15 min to 2 hours for regular spikes
+        END AS time_gap_ok,
+        
+        -- Correction tolerance based on spike strength
+        CASE 
+            WHEN strength_1 >= 7 AND strength_2 >= 7
+            THEN correction_pct BETWEEN 0.5 AND 8.0  -- Allow deeper corrections for strong spikes
+            ELSE correction_pct BETWEEN 0.3 AND 5.0  -- Normal range
+        END AS correction_ok,
+        
+        -- Delta increase requirement varies
+        CASE 
+            WHEN strength_1 >= 5  -- Already strong first spike
+            THEN delta_2 > delta_1 * 0.8  -- Second spike should be at least 80% of first
+            ELSE delta_2 > delta_1  -- Regular requirement
+        END AS delta_increased,
+        
+        -- Pattern type
+        CASE 
+            WHEN delta_1 > 0 THEN 'BULLISH'
+            ELSE 'BEARISH'
+        END AS pattern_type,
+        
+        -- Overall pattern confidence (0-10)
+        CASE 
+            WHEN strength_1 >= 8 AND strength_2 >= 8 AND delta_inc_pct >= 50 THEN 10
+            WHEN strength_1 >= 6 AND strength_2 >= 6 AND delta_inc_pct >= 30 THEN 8
+            WHEN strength_1 >= 4 AND strength_2 >= 4 AND delta_inc_pct >= 20 THEN 6
+            WHEN delta_inc_pct >= 10 THEN 4
+            ELSE 2
+        END AS pattern_confidence
+        
+    FROM calculated_metrics
+)
+
+-- STEP 10: Final results
+SELECT 
+    instrument_name AS stock,
+    time_1 AS first_time,
+    ROUND(price_1::numeric, 2) AS first_price,
+    ROUND(delta_1::numeric, 2) AS first_delta_lakh,
+    strength_1 AS first_strength,
+    ROUND(zscore_1::numeric, 1) AS first_zscore,
+    
+    ROUND(trough_price::numeric, 2) AS trough_price,
+    ROUND(correction_pct::numeric, 2) AS correction_percent,
+    
+    time_2 AS second_time,
+    ROUND(price_2::numeric, 2) AS second_price,
+    ROUND(delta_2::numeric, 2) AS second_delta_lakh,
+    strength_2 AS second_strength,
+    ROUND(zscore_2::numeric, 1) AS second_zscore,
+    
+    ROUND(price_diff_pct::numeric, 2) AS price_match_percent,
+    ROUND(minutes_gap::numeric, 0) AS time_gap_minutes,
+    ROUND(delta_inc_pct::numeric, 1) AS delta_increase_percent,
+    
+    pattern_type,
+    pattern_confidence,
+    
+    CASE 
+        WHEN strength_increase > 0 THEN 'INCREASING'
+        WHEN strength_increase = 0 THEN 'STABLE'
+        ELSE 'DECREASING'
+    END AS strength_trend,
+    
+    -- Dynamic pattern status
+    CASE 
+        WHEN price_match_ok AND time_gap_ok AND correction_ok AND delta_increased
+        THEN CASE 
+            WHEN pattern_confidence >= 8 THEN 'STRONG_VALID'
+            WHEN pattern_confidence >= 6 THEN 'MODERATE_VALID'
+            ELSE 'WEAK_VALID'
+        END
+        ELSE 'INVALID'
+    END AS pattern_status,
+    
+    -- Dynamic entry suggestion based on confidence
+    CASE 
+        WHEN price_match_ok AND time_gap_ok AND correction_ok AND delta_increased AND pattern_type = 'BULLISH'
+        THEN CASE 
+            WHEN pattern_confidence >= 8 THEN 'STRONG BUY near ' || ROUND(trough_price::numeric * 1.005, 2)
+            WHEN pattern_confidence >= 6 THEN 'BUY near ' || ROUND(trough_price::numeric * 1.01, 2)
+            ELSE 'CONSIDER BUY near ' || ROUND(trough_price::numeric * 1.015, 2)
+        END
+        WHEN price_match_ok AND time_gap_ok AND correction_ok AND delta_increased AND pattern_type = 'BEARISH'
+        THEN CASE 
+            WHEN pattern_confidence >= 8 THEN 'STRONG SELL near ' || ROUND(trough_price::numeric * 0.995, 2)
+            WHEN pattern_confidence >= 6 THEN 'SELL near ' || ROUND(trough_price::numeric * 0.99, 2)
+            ELSE 'CONSIDER SELL near ' || ROUND(trough_price::numeric * 0.985, 2)
+        END
+        ELSE 'NO ENTRY'
+    END AS suggestion
+    
+FROM valid_patterns
+WHERE price_match_ok AND time_gap_ok AND correction_ok AND delta_increased
+ORDER BY pattern_confidence DESC, delta_inc_pct DESC
+LIMIT 100;
+";
+            // SIMPLIFIED CUP PATTERN QUERY
+            //            string cupPatternQuery = @"
+            //-- STEP 1: Calculate tick delta first
+            //WITH tick_data AS (
+            //    SELECT 
+            //        ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+            //        instrument_name,
+            //        price,
+            //        size,
+            //        CASE 
+            //            WHEN price > LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN size
+            //            ELSE 0 
+            //        END AS buy_size,
+            //        CASE 
+            //            WHEN price < LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN size
+            //            ELSE 0 
+            //        END AS sell_size
+            //    FROM raw_ticks
+            //    WHERE ts BETWEEN @startUtc AND @endUtc
+            //),
+
+            //-- STEP 2: Aggregate by time interval
+            //candle_data AS (
+            //    SELECT 
+            //        instrument_name,
+            //        (date_trunc('minute', ts_ist) 
+            //            - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))) AS candle_time,
+            //        MAX(price) AS high_price,
+            //        MIN(price) AS low_price,
+            //        AVG(price) AS avg_price,
+            //        SUM(buy_size) AS buy_volume,
+            //        SUM(sell_size) AS sell_volume,
+            //        (SUM(buy_size) - SUM(sell_size)) AS net_delta,
+            //        (SUM(buy_size) - SUM(sell_size)) / 100000.0 AS net_delta_lakh
+            //    FROM tick_data
+            //    GROUP BY instrument_name, 
+            //            (date_trunc('minute', ts_ist) 
+            //             - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin)))
+            //),
+
+            //-- STEP 3: Find spikes (delta >= 1 lakh)
+            //spikes AS (
+            //    SELECT 
+            //        instrument_name,
+            //        candle_time,
+            //        avg_price,
+            //        high_price,
+            //        low_price,
+            //        net_delta_lakh,
+            //        ROW_NUMBER() OVER (PARTITION BY instrument_name ORDER BY candle_time) AS row_num
+            //    FROM candle_data
+            //    WHERE ABS(net_delta_lakh) >= 1.0  -- Minimum 1 lakh delta
+            //),
+
+            //-- STEP 4: Find pairs of spikes for same stock
+            //spike_pairs AS (
+            //    SELECT 
+            //        s1.instrument_name,
+            //        s1.candle_time AS time_1,
+            //        s1.avg_price AS price_1,
+            //        s1.net_delta_lakh AS delta_1,
+            //        s1.high_price AS high_1,
+            //        s1.low_price AS low_1,
+
+            //        s2.candle_time AS time_2,
+            //        s2.avg_price AS price_2,
+            //        s2.net_delta_lakh AS delta_2
+            //    FROM spikes s1
+            //    JOIN spikes s2 
+            //        ON s1.instrument_name = s2.instrument_name
+            //        AND s2.row_num > s1.row_num  -- Second spike after first
+            //        AND s2.candle_time <= s1.candle_time + INTERVAL '120 minutes'
+            //        -- Second spike has higher absolute delta
+            //        AND ABS(s2.net_delta_lakh) > ABS(s1.net_delta_lakh)
+            //        -- Same direction
+            //        AND s1.net_delta_lakh * s2.net_delta_lakh > 0
+            //),
+
+            //-- STEP 5: Find lowest price between spikes
+            //spikes_with_trough AS (
+            //    SELECT 
+            //        sp.*,
+            //        -- Find trough price between spikes
+            //        (
+            //            SELECT MIN(low_price)
+            //            FROM candle_data cd
+            //            WHERE cd.instrument_name = sp.instrument_name
+            //              AND cd.candle_time > sp.time_1
+            //              AND cd.candle_time < sp.time_2
+            //        ) AS trough_price
+            //    FROM spike_pairs sp
+            //),
+
+            //-- STEP 6: Calculate metrics
+            //calculated_metrics AS (
+            //    SELECT 
+            //        *,
+            //        -- Price difference percentage
+            //        ABS(price_1 - price_2) * 100.0 / price_1 AS price_diff_pct,
+
+            //        -- Time gap in minutes
+            //        EXTRACT(EPOCH FROM (time_2 - time_1)) / 60 AS minutes_gap,
+
+            //        -- Correction percentage (if trough exists)
+            //        CASE 
+            //            WHEN trough_price IS NOT NULL 
+            //            THEN (price_1 - trough_price) * 100.0 / price_1
+            //            ELSE 0 
+            //        END AS correction_pct,
+
+            //        -- Delta increase percentage
+            //        CASE 
+            //            WHEN delta_1 != 0 
+            //            THEN ((delta_2 - delta_1) / ABS(delta_1)) * 100
+            //            ELSE 0 
+            //        END AS delta_inc_pct
+            //    FROM spikes_with_trough
+            //    WHERE trough_price IS NOT NULL
+            //),
+
+            //-- STEP 7: Validate patterns
+            //valid_patterns AS (
+            //    SELECT 
+            //        instrument_name,
+            //        time_1,
+            //        price_1,
+            //        delta_1,
+            //        trough_price,
+            //        correction_pct,
+            //        time_2,
+            //        price_2,
+            //        delta_2,
+            //        price_diff_pct,
+            //        minutes_gap,
+            //        delta_inc_pct,
+
+            //        -- Validate criteria
+            //        price_diff_pct <= 0.5 AS price_match_ok,
+            //        minutes_gap BETWEEN 15 AND 120 AS time_gap_ok,
+            //        correction_pct BETWEEN 0.3 AND 5.0 AS correction_ok,
+            //        delta_2 > delta_1 AS delta_increased,
+
+            //        -- Pattern type
+            //        CASE 
+            //            WHEN delta_1 > 0 THEN 'BULLISH'
+            //            ELSE 'BEARISH'
+            //        END AS pattern_type
+            //    FROM calculated_metrics
+            //)
+
+            //-- STEP 8: Final results
+            //SELECT 
+            //    instrument_name AS stock,
+            //    time_1 AS first_time,
+            //    ROUND(price_1::numeric, 2) AS first_price,
+            //    ROUND(delta_1::numeric, 2) AS first_delta_lakh,
+
+            //    ROUND(trough_price::numeric, 2) AS trough_price,
+            //    ROUND(correction_pct::numeric, 2) AS correction_percent,
+
+            //    time_2 AS second_time,
+            //    ROUND(price_2::numeric, 2) AS second_price,
+            //    ROUND(delta_2::numeric, 2) AS second_delta_lakh,
+
+            //    ROUND(price_diff_pct::numeric, 2) AS price_match_percent,
+            //    ROUND(minutes_gap::numeric, 0) AS time_gap_minutes,
+            //    ROUND(delta_inc_pct::numeric, 1) AS delta_increase_percent,
+
+            //    pattern_type,
+
+            //    CASE 
+            //        WHEN price_match_ok AND time_gap_ok AND correction_ok AND delta_increased
+            //        THEN 'VALID'
+            //        ELSE 'INVALID'
+            //    END AS pattern_status,
+
+            //    CASE 
+            //        WHEN price_match_ok AND time_gap_ok AND correction_ok AND delta_increased AND pattern_type = 'BULLISH'
+            //        THEN 'Buy near ' || ROUND(trough_price::numeric * 1.01, 2)
+            //        WHEN price_match_ok AND time_gap_ok AND correction_ok AND delta_increased AND pattern_type = 'BEARISH'
+            //        THEN 'Sell near ' || ROUND(trough_price::numeric * 0.99, 2)
+            //        ELSE 'No Entry'
+            //    END AS suggestion
+
+            //FROM valid_patterns
+            //WHERE price_match_ok AND time_gap_ok AND correction_ok AND delta_increased
+            //ORDER BY delta_inc_pct DESC
+            //LIMIT 50;
+            //";
+
+            try
+            {
+                var cmd = new NpgsqlCommand(cupPatternQuery, con);
+                cmd.Parameters.AddWithValue("startUtc", startUtc);
+                cmd.Parameters.AddWithValue("endUtc", endUtc);
+                cmd.Parameters.AddWithValue("aggmin", aggmin);
+
+                cmd.CommandTimeout = 120;
+
+                var dataTable = new DataTable();
+                using (var reader = await cmd.ExecuteReaderAsync())
+                {
+                    dataTable.Load(reader);
+                }
+
+                if (dataTable.Rows.Count > 0)
+                {
+                    MessageBox.Show($"FOUND {dataTable.Rows.Count} CUP PATTERNS!");
+
+                    // Show sample of first 3 patterns
+                    var sampleInfo = new StringBuilder("Sample Patterns:\n");
+                    for (int i = 0; i < Math.Min(3, dataTable.Rows.Count); i++)
+                    {
+                        var row = dataTable.Rows[i];
+                        sampleInfo.AppendLine($"{row["stock"]} ({row["pattern_type"]}):");
+                        sampleInfo.AppendLine($"  First: {row["first_time"]:HH:mm} @ ₹{row["first_price"]}, Δ: {row["first_delta_lakh"]}L");
+                        sampleInfo.AppendLine($"  Trough: ₹{row["trough_price"]} ({row["correction_percent"]}% correction)");
+                        sampleInfo.AppendLine($"  Second: {row["second_time"]:HH:mm} @ ₹{row["second_price"]}, Δ: {row["second_delta_lakh"]}L");
+                        sampleInfo.AppendLine($"  Δ Increase: {row["delta_increase_percent"]}%");
+                        sampleInfo.AppendLine($"  Suggestion: {row["suggestion"]}");
+                        sampleInfo.AppendLine();
+                    }
+                    MessageBox.Show(sampleInfo.ToString());
+
+                    // Bind to DataGrid
+                    BindToDataGrid(dataTable);
+                }
+                else
+                {
+                    MessageBox.Show("No cup patterns found. This could mean:\n" +
+                                  "1. No stocks matched the pattern criteria\n" +
+                                  "2. Try using 5-minute intervals\n" +
+                                  "3. Check during volatile market periods\n" +
+                                  "4. The pattern is rare - might not occur every day");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error in cup pattern query: {ex.Message}");
+            }
+        }
+
+        private void BindToDataGrid(DataTable dataTable)
+        {
+            // Create DataGrid if it doesn't exist
+            if (CupPatternGrid == null)
+            {
+                CupPatternGrid = new DataGrid();
+                CupPatternGrid.Margin = new Thickness(10);
+                CupPatternGrid.AutoGenerateColumns = false;
+                CupPatternGrid.IsReadOnly = true;
+
+                // You might need to add this to your window's grid
+                // Example: MainGrid.Children.Add(CupPatternGrid);
+            }
+
+            // Clear existing columns
+            CupPatternGrid.Columns.Clear();
+
+            // Add columns
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Stock",
+                Binding = new Binding("stock"),
+                Width = 80
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Type",
+                Binding = new Binding("pattern_type"),
+                Width = 70
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Status",
+                Binding = new Binding("pattern_status"),
+                Width = 70
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "First Time",
+                Binding = new Binding("first_time") { StringFormat = "HH:mm" },
+                Width = 75
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "First Price",
+                Binding = new Binding("first_price"),
+                Width = 80
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "First Δ",
+                Binding = new Binding("first_delta_lakh"),
+                Width = 75
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Trough",
+                Binding = new Binding("trough_price"),
+                Width = 80
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Corr %",
+                Binding = new Binding("correction_percent"),
+                Width = 70
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Second Time",
+                Binding = new Binding("second_time") { StringFormat = "HH:mm" },
+                Width = 80
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Second Price",
+                Binding = new Binding("second_price"),
+                Width = 85
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Second Δ",
+                Binding = new Binding("second_delta_lakh"),
+                Width = 80
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Δ Inc %",
+                Binding = new Binding("delta_increase_percent"),
+                Width = 75
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Time Gap",
+                Binding = new Binding("time_gap_minutes"),
+                Width = 75
+            });
+
+            CupPatternGrid.Columns.Add(new DataGridTextColumn
+            {
+                Header = "Suggestion",
+                Binding = new Binding("suggestion"),
+                Width = 130
+            });
+
+            // Bind data
+            CupPatternGrid.ItemsSource = dataTable.DefaultView;
+
+            // Optional: Show success message
+            MessageBox.Show($"DataGrid loaded with {dataTable.Rows.Count} patterns");
+        }
+        // Simple Export to CSV
+
+        //        private async void ScanDeltaSpikes_Click(object sender, RoutedEventArgs e)
+        //        {
+
+
+
+
+        //            if (Timecom.SelectedItem == null)
+        //            {
+        //                MessageBox.Show("Please select Time Interval.");
+        //                return;
+        //            }
+        //            if (EndDatePicker.SelectedDate == null)
+        //            {
+        //                MessageBox.Show("Please select End Date.");
+        //                return;
+        //            }
+
+        //            var selectedDate = EndDatePicker.SelectedDate.Value;
+        //            var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+        //            var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+
+        //            var startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+        //                                  firsttime.Hour, firsttime.Minute, firsttime.Second);
+
+        //            var endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+        //                                  selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+
+        //            int aggmin = (int)Timecom.SelectedItem;
+        //            var startUtc = startIST.ToUniversalTime();
+        //            var endUtc = endIST.ToUniversalTime();
+
+        //            var con = new NpgsqlConnection(_connectionString);
+        //            await con.OpenAsync();
+
+        //            string deltaCheckQuery = @"
+        //WITH ticks AS (
+        //    SELECT 
+        //        ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+        //        ts,
+        //        instrument_name,
+        //        price,
+        //        size,
+        //        CASE 
+        //            WHEN price > LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN size
+        //            ELSE 0 
+        //        END AS tick_buy,
+        //        CASE 
+        //            WHEN price < LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN size
+        //            ELSE 0 
+        //        END AS tick_sell
+        //    FROM raw_ticks
+        //    WHERE ts BETWEEN @startUtc AND @endUtc
+        //      AND instrument_name IN (
+        //          SELECT DISTINCT instrument_name 
+        //          FROM raw_ticks 
+        //          WHERE ts BETWEEN @startUtc AND @endUtc 
+        //          LIMIT 5
+        //      )
+        //),
+
+        //bucketed AS (
+        //    SELECT 
+        //        instrument_name,
+        //        (date_trunc('minute', ts_ist) 
+        //            - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))) AS candle_time,
+        //        SUM(size) AS total_volume,
+        //        SUM(tick_buy) AS total_buy_delta,
+        //        SUM(tick_sell) AS total_sell_delta,
+        //        (SUM(tick_buy) - SUM(tick_sell)) AS net_delta,
+        //        (SUM(tick_buy) - SUM(tick_sell)) / 100000.0 AS net_delta_lakh
+        //    FROM ticks
+        //    GROUP BY instrument_name, 
+        //            (date_trunc('minute', ts_ist) 
+        //             - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin)))
+        //)
+
+        //SELECT 
+        //    instrument_name,
+        //    candle_time,
+        //    total_volume,
+        //    total_buy_delta,
+        //    total_sell_delta,
+        //    net_delta,
+        //    net_delta_lakh,
+        //    CASE 
+        //        WHEN net_delta_lakh > 2 THEN 'HIGH_BUYING'
+        //        WHEN net_delta_lakh < -2 THEN 'HIGH_SELLING'
+        //        WHEN net_delta_lakh > 1 THEN 'MOD_BUYING'
+        //        WHEN net_delta_lakh < -1 THEN 'MOD_SELLING'
+        //        ELSE 'NEUTRAL'
+        //    END AS delta_strength
+        //FROM bucketed
+        //WHERE ABS(net_delta_lakh) > 0.5  -- Filter for some delta activity
+        //ORDER BY ABS(net_delta_lakh) DESC, candle_time
+        //LIMIT 50;
+        //";
+
+        //            var cmd1 = new NpgsqlCommand(deltaCheckQuery, con);
+        //            cmd1.Parameters.AddWithValue("startUtc", startUtc);
+        //            cmd1.Parameters.AddWithValue("endUtc", endUtc);
+        //            cmd1.Parameters.AddWithValue("aggmin", aggmin);
+
+        //            var dataTable1 = new DataTable();
+        //            using (var reader = await cmd1.ExecuteReaderAsync())
+        //            {
+        //                dataTable1.Load(reader);
+        //            }
+
+        //            if (dataTable1.Rows.Count > 0)
+        //            {
+        //                StockDeltaGrid.ItemsSource = dataTable1.DefaultView;
+        //                MessageBox.Show($"Found {dataTable1.Rows.Count} delta entries for top 5 stocks.");
+
+        //                // Display summary stats
+        //                var maxDelta = dataTable1.AsEnumerable()
+        //                    .Select(row => Convert.ToDecimal(row["net_delta_lakh"]))
+        //                    .DefaultIfEmpty(0)
+        //                    .Max();
+        //                var minDelta = dataTable1.AsEnumerable()
+        //                    .Select(row => Convert.ToDecimal(row["net_delta_lakh"]))
+        //                    .DefaultIfEmpty(0)
+        //                    .Min();
+
+        //                MessageBox.Show($"Delta range: {minDelta:N2} to {maxDelta:N2} lakh");
+        //            }
+        //            else
+        //            {
+        //                MessageBox.Show("No significant delta found. Try lowering the threshold (0.5 lakh).");
+        //            }
+
+        //            con.Close();
+        //            return;
+        //            //AND instrument_type IN ('FUTSTK', 'FUTIDX')
+        //            // Delta Spike Scanner Query
+        //            string deltaSpikeQuery = @"
+        //WITH stock_delta_data AS (
+        //    -- Get aggregated delta data for all stocks in the selected timeframe
+        //    WITH ticks AS (
+        //        SELECT 
+        //            ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+        //            ts,
+        //            instrument_name,
+        //            price,
+        //            size,
+        //            oi,
+        //            CASE 
+        //                WHEN price > LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN size
+        //                ELSE 0 
+        //            END AS tick_buy,
+        //            CASE 
+        //                WHEN price < LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN size
+        //                ELSE 0 
+        //            END AS tick_sell
+        //        FROM raw_ticks
+        //        WHERE ts BETWEEN @startUtc AND @endUtc
+
+        //    ),
+
+        //    bucketed AS (
+        //        SELECT 
+        //            instrument_name,
+        //            (date_trunc('minute', ts_ist) 
+        //                - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))) AS candle_time,
+        //            AVG(price) AS avg_price,
+        //            MAX(price) AS high_price,
+        //            MIN(price) AS low_price,
+        //            SUM(size) AS total_volume,
+        //            SUM(tick_buy) AS total_buy_delta,
+        //            SUM(tick_sell) AS total_sell_delta,
+        //            MAX(oi) AS last_oi,
+        //            row_number() OVER (
+        //                PARTITION BY instrument_name, 
+        //                (date_trunc('minute', ts_ist) 
+        //                 - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin)))
+        //                ORDER BY ts_ist DESC
+        //            ) AS rn_close
+        //        FROM ticks
+        //        GROUP BY instrument_name, 
+        //                (date_trunc('minute', ts_ist) 
+        //                 - make_interval(mins => (EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))),
+        //                ts_ist
+        //    ),
+
+        //    delta_calcs AS (
+        //        SELECT 
+        //            instrument_name,
+        //            candle_time,
+        //            AVG(avg_price) AS avg_price,
+        //            MAX(high_price) AS high_price,
+        //            MIN(low_price) AS low_price,
+        //            SUM(total_volume) AS total_volume,
+        //            SUM(total_buy_delta) AS total_buy_delta,
+        //            SUM(total_sell_delta) AS total_sell_delta,
+        //            (SUM(total_buy_delta) - SUM(total_sell_delta)) AS net_delta,
+        //            (SUM(total_buy_delta) - SUM(total_sell_delta)) / 100000.0 AS net_delta_lakh,
+        //            MAX(CASE WHEN rn_close = 1 THEN last_oi END) AS last_oi
+        //        FROM bucketed
+        //        GROUP BY instrument_name, candle_time
+        //    ),
+
+        //    delta_stats AS (
+        //        SELECT 
+        //            *,
+        //            -- Calculate price zones (rounded to nearest 0.5% for grouping)
+        //            ROUND(avg_price / (avg_price * 0.005)) * (avg_price * 0.005) AS price_zone,
+        //            -- Calculate rolling statistics for z-score
+        //            AVG(net_delta_lakh) OVER (
+        //                PARTITION BY instrument_name 
+        //                ORDER BY candle_time 
+        //                ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
+        //            ) AS avg_delta_20period,
+        //            STDDEV(net_delta_lakh) OVER (
+        //                PARTITION BY instrument_name 
+        //                ORDER BY candle_time 
+        //                ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
+        //            ) AS stddev_delta_20period
+        //        FROM delta_calcs
+        //    )
+
+        //    SELECT 
+        //        *,
+        //        -- Calculate delta z-score
+        //        (net_delta_lakh - avg_delta_20period) / NULLIF(stddev_delta_20period, 0) AS delta_zscore
+        //    FROM delta_stats
+        //),
+
+        //-- Find delta spikes
+        //delta_spikes AS (
+        //    SELECT 
+        //        *,
+        //        LAG(price_zone) OVER (PARTITION BY instrument_name ORDER BY candle_time) AS prev_price_zone,
+        //        LAG(net_delta_lakh) OVER (PARTITION BY instrument_name ORDER BY candle_time) AS prev_delta,
+        //        LAG(avg_price) OVER (PARTITION BY instrument_name ORDER BY candle_time) AS prev_avg_price,
+        //        LAG(candle_time) OVER (PARTITION BY instrument_name ORDER BY candle_time) AS prev_candle_time
+        //    FROM stock_delta_data
+        //    WHERE ABS(net_delta_lakh) >= 2.0  -- Minimum 2 lakh delta
+        //),
+
+        //-- Group stocks by price zone and time
+        //price_zone_groups AS (
+        //    SELECT 
+        //        price_zone,
+        //        candle_time,
+        //        COUNT(DISTINCT instrument_name) AS stock_count,
+        //        STRING_AGG(instrument_name, ', ') AS stocks,
+        //        AVG(net_delta_lakh) AS avg_delta,
+        //        MAX(net_delta_lakh) AS max_delta,
+        //        MIN(net_delta_lakh) AS min_delta
+        //    FROM delta_spikes
+        //    WHERE ABS(delta_zscore) >= 1.5 OR ABS(net_delta_lakh) >= 3.0
+        //    GROUP BY price_zone, candle_time
+        //    HAVING COUNT(DISTINCT instrument_name) >= 2  -- At least 2 stocks in same zone
+        //),
+
+        //-- Find consecutive spikes in same price zone
+        //consecutive_spikes AS (
+        //    SELECT 
+        //        pzg1.price_zone,
+        //        pzg1.candle_time AS first_spike_time,
+        //        pzg2.candle_time AS second_spike_time,
+        //        pzg1.stocks AS first_spike_stocks,
+        //        pzg2.stocks AS second_spike_stocks,
+        //        pzg1.avg_delta AS first_avg_delta,
+        //        pzg2.avg_delta AS second_avg_delta,
+        //        pzg1.max_delta AS first_max_delta,
+        //        pzg2.max_delta AS second_max_delta,
+        //        EXTRACT(EPOCH FROM (pzg2.candle_time - pzg1.candle_time)) / 60 AS minutes_between,
+        //        -- Check if same stocks are involved
+        //        (SELECT COUNT(*) FROM unnest(string_to_array(pzg1.stocks, ', ')) 
+        //         INTERSECT 
+        //         SELECT COUNT(*) FROM unnest(string_to_array(pzg2.stocks, ', '))) AS common_stocks_count
+        //    FROM price_zone_groups pzg1
+        //    JOIN price_zone_groups pzg2 
+        //        ON pzg1.price_zone = pzg2.price_zone
+        //        AND pzg2.candle_time > pzg1.candle_time
+        //        AND EXTRACT(EPOCH FROM (pzg2.candle_time - pzg1.candle_time)) BETWEEN 5 * 60 AND 60 * 60  -- 5 min to 1 hour
+        //    WHERE pzg1.candle_time >= (SELECT MIN(candle_time) FROM delta_spikes) + INTERVAL '20 minutes'
+        //)
+
+        //-- Final results
+        //SELECT 
+        //    cs.price_zone,
+        //    cs.first_spike_time,
+        //    cs.second_spike_time,
+        //    cs.minutes_between,
+        //    cs.first_spike_stocks,
+        //    cs.second_spike_stocks,
+        //    ROUND(cs.first_avg_delta, 2) AS first_avg_delta_lakh,
+        //    ROUND(cs.second_avg_delta, 2) AS second_avg_delta_lakh,
+        //    ROUND(cs.first_max_delta, 2) AS first_max_delta_lakh,
+        //    ROUND(cs.second_max_delta, 2) AS second_max_delta_lakh,
+        //    cs.common_stocks_count,
+        //    -- Get sample stock details for display
+        //    (SELECT instrument_name FROM delta_spikes ds 
+        //     WHERE ds.price_zone = cs.price_zone 
+        //       AND ds.candle_time = cs.first_spike_time 
+        //     LIMIT 1) AS sample_stock,
+        //    (SELECT avg_price FROM delta_spikes ds 
+        //     WHERE ds.price_zone = cs.price_zone 
+        //       AND ds.candle_time = cs.first_spike_time 
+        //     LIMIT 1) AS sample_price,
+        //    -- Strength indicator
+        //    CASE 
+        //        WHEN cs.common_stocks_count >= 2 AND cs.second_avg_delta > cs.first_avg_delta THEN 'STRONG_CONFIRMATION'
+        //        WHEN cs.common_stocks_count >= 1 THEN 'MODERATE_CONFIRMATION'
+        //        ELSE 'WEAK_CONFIRMATION'
+        //    END AS confirmation_strength,
+        //    -- Direction
+        //    CASE 
+        //        WHEN cs.first_avg_delta > 0 AND cs.second_avg_delta > 0 THEN 'BULLISH'
+        //        WHEN cs.first_avg_delta < 0 AND cs.second_avg_delta < 0 THEN 'BEARISH'
+        //        ELSE 'MIXED'
+        //    END AS direction
+        //FROM consecutive_spikes cs
+        //WHERE cs.minutes_between BETWEEN 5 AND 30  -- Focus on 5-30 minute intervals
+        //ORDER BY cs.first_spike_time DESC, ABS(cs.first_avg_delta + cs.second_avg_delta) DESC
+        //LIMIT 100;
+        //";
+
+        //            try
+        //            {
+        //                var cmd = new NpgsqlCommand(deltaSpikeQuery, con);
+        //                cmd.Parameters.AddWithValue("startUtc", startUtc);
+        //                cmd.Parameters.AddWithValue("endUtc", endUtc);
+        //                cmd.Parameters.AddWithValue("aggmin", aggmin);
+
+        //                cmd.CommandTimeout = 180; // 3 minutes timeout for scanning all stocks
+
+        //                // Create DataTable to store results
+        //                var dataTable = new DataTable();
+        //                using (var reader = await cmd.ExecuteReaderAsync())
+        //                {
+        //                    dataTable.Load(reader);
+        //                }
+
+        //                // Display results in DataGrid
+        //                if (dataTable.Rows.Count > 0)
+        //                {
+        //                    DeltaSpikeGrid.ItemsSource = dataTable.DefaultView;
+
+        //                    // Show summary
+        //                    MessageBox.Show($"Found {dataTable.Rows.Count} delta spike patterns in selected timeframe.");
+
+        //                    // Export to CSV for backtesting analysis
+        //                    //ExportToCSV(dataTable, $"DeltaSpikes_{selectedDate:yyyyMMdd}_{aggmin}min.csv");
+        //                }
+        //                else
+        //                {
+        //                    MessageBox.Show("No delta spike patterns found in the selected timeframe.");
+        //                    DeltaSpikeGrid.ItemsSource = null;
+        //                }
+        //            }
+        //            catch (Exception ex)
+        //            {
+        //                MessageBox.Show($"Error scanning delta spikes: {ex.Message}");
+        //            }
+        //            finally
+        //            {
+        //                con.Close();
+        //            }
+        //        }
+
+        // Helper method to export results to CSV
+        //private void ExportToCSV(DataTable dataTable, string fileName)
+        //{
+        //    try
+        //    {
+        //        var sb = new StringBuilder();
+
+        //        // Add headers
+        //        var columnNames = dataTable.Columns.Cast<DataColumn>()
+        //                                .Select(column => column.ColumnName);
+        //        sb.AppendLine(string.Join(",", columnNames));
+
+        //        // Add rows
+        //        foreach (DataRow row in dataTable.Rows)
+        //        {
+        //            var fields = row.ItemArray.Select(field =>
+        //                field?.ToString().Contains(",") == true ?
+        //                $"\"{field}\"" :
+        //                field?.ToString() ?? "");
+        //            sb.AppendLine(string.Join(",", fields));
+        //        }
+
+        //        var filePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), fileName);
+        //        File.WriteAllText(filePath, sb.ToString());
+
+        //        // Optional: Show export confirmation
+        //        // MessageBox.Show($"Results exported to: {filePath}");
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Console.WriteLine($"Error exporting to CSV: {ex.Message}");
+        //    }
+        //}
+
+        // Class for delta spike results (optional, for type-safe handling)
+        public class DeltaSpikeResult
+        {
+            public decimal PriceZone { get; set; }
+            public DateTime FirstSpikeTime { get; set; }
+            public DateTime SecondSpikeTime { get; set; }
+            public decimal MinutesBetween { get; set; }
+            public string FirstSpikeStocks { get; set; }
+            public string SecondSpikeStocks { get; set; }
+            public decimal FirstAvgDelta { get; set; }
+            public decimal SecondAvgDelta { get; set; }
+            public decimal FirstMaxDelta { get; set; }
+            public decimal SecondMaxDelta { get; set; }
+            public int CommonStocksCount { get; set; }
+            public string SampleStock { get; set; }
+            public decimal SamplePrice { get; set; }
+            public string ConfirmationStrength { get; set; }
+            public string Direction { get; set; }
+        }
+
+        // Alternative method to get typed results
+        private async Task<List<DeltaSpikeResult>> GetDeltaSpikeResults(DateTime startUtc, DateTime endUtc, int aggmin)
+        {
+            var results = new List<DeltaSpikeResult>();
+
+            using (var con = new NpgsqlConnection(_connectionString))
+            {
+                await con.OpenAsync();
+
+                var cmd = new NpgsqlCommand(_connectionString, con);
+                cmd.Parameters.AddWithValue("startUtc", startUtc);
+                cmd.Parameters.AddWithValue("endUtc", endUtc);
+                cmd.Parameters.AddWithValue("aggmin", aggmin);
+
+                using (var reader = await cmd.ExecuteReaderAsync())
+                {
+                    while (await reader.ReadAsync())
+                    {
+                        var result = new DeltaSpikeResult
+                        {
+                            PriceZone = reader.GetDecimal(0),
+                            FirstSpikeTime = reader.GetDateTime(1),
+                            SecondSpikeTime = reader.GetDateTime(2),
+                            MinutesBetween = reader.GetDecimal(3),
+                            FirstSpikeStocks = reader.GetString(4),
+                            SecondSpikeStocks = reader.GetString(5),
+                            FirstAvgDelta = reader.GetDecimal(6),
+                            SecondAvgDelta = reader.GetDecimal(7),
+                            FirstMaxDelta = reader.GetDecimal(8),
+                            SecondMaxDelta = reader.GetDecimal(9),
+                            CommonStocksCount = reader.GetInt32(10),
+                            SampleStock = reader.IsDBNull(11) ? "" : reader.GetString(11),
+                            SamplePrice = reader.IsDBNull(12) ? 0 : reader.GetDecimal(12),
+                            ConfirmationStrength = reader.GetString(13),
+                            Direction = reader.GetString(14)
+                        };
+
+                        results.Add(result);
+                    }
+                }
+            }
+
+            return results;
+        }
+
     }
-    #endregion
+
 }
+public static class DictionaryExtensions
+{
+    public static TValue GetValueOrDefault<TKey, TValue>(
+        this IDictionary<TKey, TValue> d,
+        TKey key,
+        TValue def)
+    {
+        if (d.TryGetValue(key, out var v))
+            return v;
+
+        return def;
+    }
+}
+
+#region --- Models -------------------------------------------------------------
+public class EnhancedTradeCandidate
+{
+    public string StockName { get; set; }
+    public string Sector { get; set; }
+    public double SpotPrice { get; set; }
+    public double FuturePrice { get; set; }
+    public string OIChange { get; set; }
+    public string VolumeStatus { get; set; }
+    public double VolumeRatio { get; set; }
+    public double StockCVD { get; set; }
+    public double FuturesCVD { get; set; }
+    public double RollingDelta { get; set; }
+    public string CVDStatus { get; set; }
+    public string FirstMinuteBreakout { get; set; }
+    public string FiveMinuteBreakout { get; set; }
+    public string VWAPStatus { get; set; }
+    public string OpenHighLow { get; set; }
+    public string Near52WeekHigh { get; set; }
+    public double DistanceFrom52WH { get; set; }
+    public int VolumeScore { get; set; }
+    public int CVDScore { get; set; }
+    public int BreakoutScore { get; set; }
+    public int TotalScore { get; set; }
+    public string SignalStrength { get; set; }
+    public string Support { get; set; }
+    public string Resistance { get; set; }
+    public int SupportHit { get; set; }
+    public int ResistanceHit { get; set; }
+}
+
+public class MinuteRow
+{
+    public DateTime Time { get; set; }
+    public double Open { get; set; }
+    public double High { get; set; }
+    public double Low { get; set; }
+    public double Close { get; set; }
+    public long Volume { get; set; }
+    public double Delta { get; set; }  // Changed from long to double
+    public double RollingCvd { get; set; }
+    public double OI { get; set; }
+}
+
+public class RawTick
+{
+    public DateTime Ts { get; set; }
+    public string InstrumentKey { get; set; }
+    public string InstrumentName { get; set; }
+    public double Price { get; set; }
+    public long Size { get; set; }
+    public double? BidPrice { get; set; }
+    public long? BidQty { get; set; }
+    public double? AskPrice { get; set; }
+    public long? AskQty { get; set; }
+    public double? OI { get; set; }
+    public double? Cvd { get; set; }
+    public double? OrderImbalance { get; set; }
+}
+public class DailyStockRow
+{
+    public DateTime DayDate { get; set; }
+    public double Open { get; set; }
+    public double High { get; set; }
+    public double Low { get; set; }
+    public double Close { get; set; }
+    public long Volume { get; set; }
+    public double Delivery { get; set; }
+}
+
+public class DailyFutureRow
+{
+    public DateTime DayDate { get; set; }
+    public double FutOpen { get; set; }
+    public double FutHigh { get; set; }
+    public double FutLow { get; set; }
+    public double FutClose { get; set; }
+    public long FutVolume { get; set; }
+    public long OpenInterest { get; set; }
+}
+#endregion
+
+#region --- TradeSignalCalculator ---------------------------------------------
+public class TradeSignalCalculator
+{
+    public int RollingWindowMinutes { get; set; } = 15;
+    public double VolumeMultiplierThreshold { get; set; } = 2.0;
+    public long CvdSpikeThreshold { get; set; } = 20000;
+    public double CvdSlopeThreshold { get; set; } = 2000;
+
+    public (double rollingCvd, double slope, bool rawSpike) ComputeRollingCvdAndSpike(IEnumerable<MinuteRow> lastN)
+    {
+        var list = lastN.OrderBy(m => m.Time).ToList();
+        if (!list.Any()) return (0, 0, false);
+        double rolling = list.Last().RollingCvd;
+        double slope = (list.Last().RollingCvd - list.First().RollingCvd) / Math.Max(1, (list.Count - 1));
+        bool rawSpike = list.Any(m => Math.Abs(m.Delta) >= CvdSpikeThreshold);
+        return (rolling, slope, rawSpike);
+    }
+
+    public double ComputeVwap(IEnumerable<MinuteRow> bars)
+    {
+        double pvSum = 0; long qtySum = 0;
+        foreach (var b in bars)
+        {
+            double typical = (b.High + b.Low + b.Close) / 3.0;
+            pvSum += typical * b.Volume;
+            qtySum += b.Volume;
+        }
+        return qtySum == 0 ? 0 : pvSum / qtySum;
+    }
+
+    public double ComputeVolumeRatio(MinuteRow last, IEnumerable<MinuteRow> prev)
+    {
+        var prevList = prev.ToList();
+        var avg = prevList.Any() ? prevList.Average(p => (double)p.Volume) : 0.0;
+        return avg == 0 ? 0 : (double)last.Volume / avg;
+    }
+
+    public string ClassifyOIChange(long todayOi, long prevOi, double priceChangePercent)
+    {
+        long deltaOi = todayOi - prevOi;
+        if (deltaOi > 0 && priceChangePercent > 0.1) return "Long Build";
+        if (deltaOi > 0 && priceChangePercent < -0.1) return "Short Build";
+        if (deltaOi < 0 && priceChangePercent > 0.1) return "Short Covering";
+        if (deltaOi < 0 && priceChangePercent < -0.1) return "Long Unwinding";
+        return "Neutral";
+    }
+
+    public string CheckOpenHighLow(MinuteRow firstMinuteOfDay)
+    {
+        if (firstMinuteOfDay == null) return "Normal";
+        if (Math.Abs(firstMinuteOfDay.Open - firstMinuteOfDay.High) < 1e-6) return "Open=High";
+        if (Math.Abs(firstMinuteOfDay.Open - firstMinuteOfDay.Low) < 1e-6) return "Open=Low";
+        return "Normal";
+    }
+
+    public (string near52, double distancePct) Check52Week(List<DailyStockRow> history, double currentPrice)
+    {
+        if (history == null || history.Count == 0) return ("None", 0);
+        var last365 = history.OrderByDescending(d => d.DayDate).Take(365).ToList();
+        double hi52 = last365.Max(d => d.High);
+        double lo52 = last365.Min(d => d.Low);
+        if (currentPrice >= hi52) return ("BreakHigh", 100.0 * (currentPrice - hi52) / hi52);
+        if (currentPrice <= lo52) return ("BreakLow", 100.0 * (lo52 - currentPrice) / lo52);
+        double dist = Math.Min(100.0 * (hi52 - currentPrice) / hi52, 100.0 * (currentPrice - lo52) / lo52);
+        return ("None", dist);
+    }
+
+    public (double support, int supportHits, double resistance, int resistanceHits) ComputeSupportResistance(List<DailyStockRow> history, double tolerancePct = 0.5)
+    {
+        var last90 = history.OrderByDescending(d => d.DayDate).Take(90).ToList();
+        if (!last90.Any()) return (0, 0, 0, 0);
+        var highs = last90.OrderByDescending(d => d.High).Take(3).Select(d => d.High).ToList();
+        var lows = last90.OrderBy(d => d.Low).Take(3).Select(d => d.Low).ToList();
+        double resistance = highs.Average();
+        double support = lows.Average();
+        int resHits = last90.Count(d => Math.Abs((d.Close - resistance) / resistance * 100.0) <= tolerancePct);
+        int supHits = last90.Count(d => Math.Abs((d.Close - support) / support * 100.0) <= tolerancePct);
+        return (support, supHits, resistance, resHits);
+    }
+
+    public (int volumeScore, int cvdScore, int breakoutScore) ComputeScores(double volumeRatio, double rollingCvd, double cvdSlope, bool isFirstMinBreak, bool isFiveMinBreak)
+    {
+        int vScore = 0, cScore = 0, bScore = 0;
+        if (volumeRatio >= 2.0) vScore = 3;
+        else if (volumeRatio >= 1.5) vScore = 2;
+        else if (volumeRatio >= 1.2) vScore = 1;
+
+        if (rollingCvd > 50000 && cvdSlope > 3000) cScore = 3;
+        else if (rollingCvd > 20000 && cvdSlope > 1000) cScore = 2;
+        else if (Math.Abs(rollingCvd) > 5000) cScore = 1;
+
+        if (isFirstMinBreak) bScore += 2;
+        if (isFiveMinBreak) bScore += 3;
+        return (vScore, cScore, bScore);
+    }
+
+    public bool CheckFirstMinuteBreakout(List<MinuteRow> minutes)
+    {
+        if (minutes == null || minutes.Count < 2) return false;
+        var first = minutes.First();
+        return minutes.Skip(1).Take(4).Any(m => m.Close > first.High) || minutes.Skip(1).Take(4).Any(m => m.Close < first.Low);
+    }
+
+    public bool CheckFiveMinuteBreakout(List<MinuteRow> minutes)
+    {
+        if (minutes == null || minutes.Count < 5) return false;
+        var first = minutes.First();
+        return minutes.Take(5).Any(m => m.High > first.High) || minutes.Take(5).Any(m => m.Low < first.Low);
+    }
+}
+#endregion
+
+

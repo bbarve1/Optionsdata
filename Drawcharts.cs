@@ -1,4 +1,5 @@
-﻿using LiveCharts;
+﻿using Google.Protobuf.WellKnownTypes;
+using LiveCharts;
 using LiveCharts.Defaults;
 using LiveCharts.Wpf;
 using Npgsql;
@@ -71,11 +72,12 @@ namespace CVD
         private async Task<List<Tick>> LoadTicks(string symbol, DateTime date)
         {
             var ticks = new List<Tick>();
-
+            var indiaTimeZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
             using (var con = new NpgsqlConnection(ConnStr))
             {
                 await con.OpenAsync();
-                string query = @"SELECT ts, price, size, bid_price, ask_price 
+
+                string query = @"SELECT ts, price, size, bid_price, bid_qty, ask_price, ask_qty, order_imbalance,oi,cvd
                                  FROM raw_ticks 
                                  WHERE instrument_name = @symbol 
                                    AND ts::date = @date
@@ -85,18 +87,25 @@ namespace CVD
                 {
                     cmd.Parameters.AddWithValue("@symbol", symbol);
                     cmd.Parameters.AddWithValue("@date", date);
-
                     using (var reader = await cmd.ExecuteReaderAsync())
                     {
                         while (await reader.ReadAsync())
                         {
+                            var utcTime = reader.GetDateTime(0);
+                            var istTime = TimeZoneInfo.ConvertTimeFromUtc(utcTime, indiaTimeZone);
                             ticks.Add(new Tick
                             {
-                                Timestamp = reader.GetDateTime(0).ToLocalTime(),
+                                //Timestamp = reader.GetDateTime(0).ToLocalTime(),
+                                Timestamp = istTime,
                                 Price = reader.GetDouble(1),
                                 Volume = reader.GetInt64(2),
                                 Bid = reader.GetDouble(3),
-                                Ask = reader.GetDouble(4)
+                                BidQty = reader.GetDouble(4),
+                                Ask = reader.GetDouble(5),
+                                AskQty = reader.GetDouble(6),
+                                OrderImbalance = reader.IsDBNull(7) ? 0 : reader.GetDouble(7),
+                                oi = reader.GetDouble(8),
+                                cvd = reader.GetDouble(9)
                             });
                         }
                     }
@@ -125,22 +134,23 @@ namespace CVD
                 double high = list.Max(x => x.Price);
                 double low = list.Min(x => x.Price);
                 long vol = list.Sum(x => x.Volume);
-
+                double Cvd = list.Sum(x => x.cvd);
                 // Tick-by-tick true CVD logic
                 double upVol = 0, downVol = 0;
                 double prevPrice = list.First().Price;
 
-                foreach (var t in list)
-                {
-                    if (t.Price > prevPrice)
-                        upVol += t.Volume;
-                    else if (t.Price < prevPrice)
-                        downVol += t.Volume;
+                //foreach (var t in list)
+                //{
+                //    if (t.Price > prevPrice)
+                //        upVol += t.Volume;
+                //    else if (t.Price < prevPrice)
+                //        downVol += t.Volume;
 
-                    prevPrice = t.Price;
-                }
+                //    prevPrice = t.Price;
+                //}
 
-                cumulativeCvd += (upVol - downVol);
+                //cumulativeCvd += (upVol - downVol);
+                cumulativeCvd += Cvd;
 
                 bars.Add(new Candle
                 {
@@ -156,6 +166,7 @@ namespace CVD
 
             return bars.OrderBy(x => x.Time).ToList();
         }
+
 
         private void DrawPriceChart(List<Candle> bars)
         {
@@ -306,6 +317,11 @@ namespace CVD
             public long Volume { get; set; }
             public double Bid { get; set; }
             public double Ask { get; set; }
+            public double BidQty { get; set; }
+            public double AskQty { get; set; }
+            public double OrderImbalance { get; set; }
+            public double oi { get; set; }
+            public double cvd { get; set; }
         }
 
         public class Candle
@@ -317,6 +333,7 @@ namespace CVD
             public double Close { get; set; }
             public long Volume { get; set; }
             public double Cvd { get; set; }
+            public double OrderImbalance { get; set; }
         }
     }
 }

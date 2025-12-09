@@ -68,25 +68,21 @@ namespace CVD
 
             string instrumentKey = "NSE_INDEX%7CNifty%2050";
             var nifty50Symbols = new HashSet<string>
-{
+            {
                 "RELIANCE", "TCS", "HDFCBANK", "INFY", "HINDUNILVR", "ICICIBANK", "KOTAKBANK",
                 "SBIN", "BHARTIARTL", "ITC", "ASIANPAINT", "DMART", "BAJFINANCE", "HCLTECH",
                 "WIPRO", "SUNPHARMA", "MARUTI", "TITAN", "ULTRACEMCO", "NTPC", "ONGC",
                 "POWERGRID", "NESTLEIND", "M&M", "AXISBANK", "LT", "TECHM", "TATAMOTORS",
                 "ADANIPORTS", "BAJAJFINSV", "BRITANNIA", "GRASIM", "JSWSTEEL", "HDFCLIFE",
                 "CIPLA", "SHREECEM", "UPL", "SBILIFE", "DIVISLAB", "DRREDDY", "HEROMOTOCO",
-                "INDUSINDBK", "COALINDIA", "BAJAJ-AUTO", "EICHERMOT", "APOLLOHOSP", "TATASTEEL", "BPCL"
+                "INDUSINDBK", "COALINDIA","HINDALCO", "BAJAJ-AUTO", "EICHERMOT", "NIFTY", "TATASTEEL", "BPCL"
             };
 
-            //var nifty50Symbols = new HashSet<string>
-            //        {
-            //            "HAL", "NAUKRI", "HAL","BHARTIARTL"
-            //        };
             var equityList = instruments
                             .Where(x => nifty50Symbols.Contains(x.trading_symbol))
                             .ToList();
 
-            double niftySpot = 25300;
+            double niftySpot = 25900;
             double bankNiftySpot = 55000;
 
             var equityNames = equityList
@@ -97,9 +93,9 @@ namespace CVD
                 .Where(x => x.segment == "NSE_FO"
                             && x.instrument_type == "FUT"
                             && equityNames.Contains(x.name))
-                .Select(x => x.name)
-                .Distinct()
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                            .Select(x => x.name)
+                            .Distinct()
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             //var equityList = instruments
             //    .Where(x => x.segment == "NSE_EQ" && x.instrument_type == "EQ" && fnoSymbols.Contains(x.name))
@@ -108,7 +104,7 @@ namespace CVD
             // 4️⃣ FNO list — only for equities in our equityList
             var fnoList = instruments
                             .Where(x => x.segment == "NSE_FO"
-                                        && fnoSymbols.Contains(x.name)
+                                        //&& fnoSymbols.Contains(x.name)
                                         && !x.trading_symbol.EndsWith("CE") // Exclude Call Options
                                         && !x.trading_symbol.EndsWith("PE") // Exclude Put Options
                                         && x.instrument_type == "FUT") // Keep only Futures
@@ -148,7 +144,7 @@ namespace CVD
             
             var niftyOptions = niftyOptionsAll
                             .Where(x => ParseExpiry(x.expiry).Date == nearestExpiry.Date
-                                        && Math.Abs(x.strike_price - niftySpot) <= (1 * 50))
+                                        && Math.Abs(x.strike_price - niftySpot) <= (3 * 50))
                             .OrderBy(x => x.strike_price)
                             .ToList();
 

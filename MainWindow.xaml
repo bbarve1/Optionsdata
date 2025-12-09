@@ -14,9 +14,32 @@
         <DockPanel Margin="8" Grid.Row="0">
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
                 <TextBlock Text="CVD Trend Scanner" FontSize="18" Foreground="White" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <Button Content="Refresh" Width="90" Margin="0,0,6,0" Click="RefreshButton_Click"/>
-                <Button Content="Load From DB" Width="120" Margin="0,0,6,0" Click="LoadCandidatesFromDb_Click"/>
                 <Button Content="Connect WS" Width="100" Margin="0,0,6,0" Click="ConnectBtn_Click"/>
+                <StackPanel Orientation="Horizontal" Margin="0 0 0 10">
+                    <ComboBox x:Name="InstrumentCombo" Width="200" FontSize="16"/>
+                    <Button Content="Search" Width="120" Height="35" Margin="10 0 0 0" Click="Search_Click"/>
+                    <Button Content="Nifty" Width="120" Height="35" Margin="10 0 0 0" Click="Nifty_Click"/>
+                    <Button Content="Sector" Width="120" Height="35" Margin="10 0 0 0" Click="SectorCVD_Click"/>
+                </StackPanel>
+                <Button Content="Scan Signals" Width="100" Margin="0,0,6,0" Click="ScanSignals_Click" Background="Green" Foreground="White"/>
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,10">
+                    <!-- Date Selection -->
+                    <DatePicker x:Name="EndDatePicker" SelectedDateChanged="EndDatePicker_SelectedDateChanged" Width="140"/>
+
+                    <!-- Time Selection -->
+                    <ComboBox x:Name="EndTimeComboBox" Width="100" SelectionChanged="EndTimeComboBox_SelectionChanged" Margin="10,0,0,0"/>
+                </StackPanel>
+
+                <ComboBox x:Name="Timecom" Width="100" Height="30" Margin="10,10,10,10">
+
+                </ComboBox>
+
+                <!-- Navigation Buttons -->
+
+                <Button Content="Back" Width="75" Margin="10,0,0,0"  Click="BackButton_Click"/>
+                <Button Content="Next" Width="75" Margin="10,0,0,0" Click="NextButton_Click"/>
+                <Button Content="Fromdb" Width="75" Margin="10,0,0,0" Click="Button_Click"/>
+
             </StackPanel>
 
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
@@ -30,7 +53,7 @@
             </StackPanel>
         </DockPanel>
 
-        <Grid Grid.Row="1" Margin="8">
+        <Grid Grid.Row="1"  Margin="8">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="100"/>
@@ -98,11 +121,11 @@
                 </TabItem>
 
                 <!-- Chart Tab -->
-                <TabItem Header="Chart">
+                <TabItem Header="Chart" Margin="-2,-2,-2,0" Height="20" VerticalAlignment="Top">
                     <Grid Background="#1E1E1E">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="200"/>
                             <RowDefinition Height="0.9*"/>
                         </Grid.RowDefinitions>
 
@@ -124,14 +147,263 @@
 
                         <!-- CVD Chart with ScrollViewer -->
                         <ScrollViewer Grid.Row="2" Margin="10" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                            <lvc:CartesianChart x:Name="CvdChart" MinWidth="800" Height="200"/>
+                            <lvc:CartesianChart x:Name="CvdChart" MinWidth="800" Height="350"/>
                         </ScrollViewer>
                     </Grid>
+                </TabItem>
+
+                <!-- Diversion Scanner Tab -->
+                <TabItem Header="Diversion Scanner">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="269*"/>
+                            <ColumnDefinition Width="909*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <DataGrid x:Name="DiversionGrid30Min" ColumnHeaderStyle="{StaticResource DarkDataGridHeaderStyle}" Grid.Row="0" Margin="5,5,5,5"
+                 AutoGenerateColumns="False" IsReadOnly="True"
+                 RowBackground="#1b1b1b" AlternatingRowBackground="#141414" Foreground="White" Grid.ColumnSpan="2">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Instrument" Binding="{Binding InstrumentName}" Width="100"/>
+                                <DataGridTextColumn Header="Price" Binding="{Binding Price, StringFormat=N2}" Width="80"/>
+                                <DataGridTextColumn Header="CVD" Binding="{Binding CumulativeVolumeDelta, StringFormat=N0}" Width="100"/>
+                                <DataGridTextColumn Header="Diversion" Binding="{Binding DiversionType}" Width="120"/>
+                                <DataGridTextColumn Header="Strength" Binding="{Binding Strength}" Width="80"/>
+                                <DataGridTextColumn Header="Time" Binding="{Binding Timestamp, StringFormat=HH:mm:ss}" Width="100"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+
+                        <DataGrid x:Name="DiversionGrid1Hour" ColumnHeaderStyle="{StaticResource DarkDataGridHeaderStyle}" Grid.Row="1" Margin="5,5,5,5"
+                 AutoGenerateColumns="False" IsReadOnly="True"
+                 RowBackground="#1b1b1b" AlternatingRowBackground="#141414" Foreground="White" Grid.ColumnSpan="2">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Instrument" Binding="{Binding InstrumentName}" Width="100"/>
+                                <DataGridTextColumn Header="Price" Binding="{Binding Price, StringFormat=N2}" Width="80"/>
+                                <DataGridTextColumn Header="CVD" Binding="{Binding CumulativeVolumeDelta, StringFormat=N0}" Width="100"/>
+                                <DataGridTextColumn Header="Diversion" Binding="{Binding DiversionType}" Width="120"/>
+                                <DataGridTextColumn Header="Strength" Binding="{Binding Strength}" Width="80"/>
+                                <DataGridTextColumn Header="Time" Binding="{Binding Timestamp, StringFormat=HH:mm:ss}" Width="100"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Grid>
+                </TabItem>
+
+                <!-- Big CVD Trades Tab -->
+                <TabItem Header="Big CVD Trades">
+
+                    <DataGrid x:Name="BigCvdGrid" ColumnHeaderStyle="{StaticResource DarkDataGridHeaderStyle}" Margin="5"
+             AutoGenerateColumns="False" IsReadOnly="True"
+             RowBackground="#1b1b1b" AlternatingRowBackground="#141414" Foreground="White">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Instrument" Binding="{Binding InstrumentName}" Width="150"/>
+                            <DataGridTextColumn Header="Price" Binding="{Binding Price, StringFormat=N2}" Width="50"/>
+                            <!--<DataGridTextColumn Header="CVD" Binding="{Binding CumulativeVolumeDelta, StringFormat=N0}" Width="100"/>-->
+                            <DataGridTextColumn Header="Buy%" Binding="{Binding BuyingPressurePercent , StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="Sell%" Binding="{Binding SellingPressurePercent  , StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="CVDPrice%" Binding="{Binding CvdPriceRatio   , StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="VolumePriceRatio%" Binding="{Binding VolumePriceRatio   , StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="CvdZScore" Binding="{Binding CvdZScore   , StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="VolumeVsAvg%" Binding="{Binding VolumeVsAverage    , StringFormat=N0}" Width="100"/>
+                            <!--<DataGridTextColumn Header="CvdVsAvg%" Binding="{Binding CvdVsAverage   , StringFormat=N0}" Width="100"/>-->
+                            <DataGridTextColumn Header="VolumeRatio" Binding="{Binding VolumeRatio   , StringFormat=N0}" Width="100"/>
+                            <!--<DataGridTextColumn Header="AverageCvd" Binding="{Binding AverageCvd   , StringFormat=N0}" Width="100"/>-->
+                            <DataGridTextColumn Header="CvdDivergence" Binding="{Binding CvdDivergence   , StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="PriceChangePer" Binding="{Binding PriceChangePercent    , StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="OiChangePer" Binding="{Binding OiChangePercent   , StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="OiTrend" Binding="{Binding OiTrend    , StringFormat=N0}" Width="100"/>
+                            <!--<DataGridTextColumn Header="Volume" Binding="{Binding Volume, StringFormat=N0}" Width="100"/>-->
+                            <!--<DataGridTextColumn Header="Signal" Binding="{Binding TradeSignal}" Width="150"/>
+                            <DataGridTextColumn Header="Action" Binding="{Binding SuggestedAction}" Width="80"/>-->
+                            <DataGridTextColumn Header="Time" Binding="{Binding Timestamp, StringFormat=HH:mm:ss}" Width="100"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+
+                <!-- CVD Spikes Tab -->
+                <TabItem Header="CVD Spikes">
+                    <DataGrid x:Name="CvdSpikeGrid" ColumnHeaderStyle="{StaticResource DarkDataGridHeaderStyle}" Margin="5"
+             AutoGenerateColumns="False" IsReadOnly="True"
+             RowBackground="#1b1b1b" AlternatingRowBackground="#141414" Foreground="White">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Instrument" Binding="{Binding InstrumentName}" Width="100"/>
+                            <DataGridTextColumn Header="Price" Binding="{Binding Price, StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="CVD Spike" Binding="{Binding CvdSpike, StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="Price Chg %" Binding="{Binding PriceChangePercent, StringFormat=N2}" Width="90"/>
+                            <DataGridTextColumn Header="OI Action" Binding="{Binding OIAction}" Width="120"/>
+                            <DataGridTextColumn Header="Signal" Binding="{Binding Signal}" Width="120"/>
+                            <DataGridTextColumn Header="Time" Binding="{Binding Timestamp, StringFormat=HH:mm:ss}" Width="100"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+
+                <!-- Trend Following Tab -->
+                <TabItem Header="Trend Following">
+                    <DataGrid x:Name="TrendFollowingGrid" ColumnHeaderStyle="{StaticResource DarkDataGridHeaderStyle}" Margin="5"
+             AutoGenerateColumns="False" IsReadOnly="True"
+             RowBackground="#1b1b1b" AlternatingRowBackground="#141414" Foreground="White">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Instrument" Binding="{Binding InstrumentName}" Width="100"/>
+                            <DataGridTextColumn Header="Price" Binding="{Binding Price, StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="Price Chg %" Binding="{Binding PriceChangePercent, StringFormat=N2}" Width="90"/>
+                            <DataGridTextColumn Header="OI Chg %" Binding="{Binding OIChangePercent, StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="CVD Change" Binding="{Binding CVDChange, StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="Trend" Binding="{Binding TrendDirection}" Width="80"/>
+                            <DataGridTextColumn Header="Strength" Binding="{Binding Strength}" Width="80"/>
+                            <DataGridTextColumn Header="Signal Type" Binding="{Binding SignalType}" Width="150"/>
+                            <DataGridTextColumn Header="Time" Binding="{Binding Timestamp, StringFormat=HH:mm:ss}" Width="100"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+
+                <!-- Scalping Opportunities Tab -->
+                <TabItem Header="Scalping">
+                    <!--<DataGrid x:Name="DataGridCVD"  ColumnHeaderStyle="{StaticResource DarkDataGridHeaderStyle}" Margin="5"
+             AutoGenerateColumns="False" IsReadOnly="True"
+             RowBackground="#1b1b1b" AlternatingRowBackground="#141414" Foreground="White" SelectionChanged="ScalpingGrid_SelectionChanged">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Instrument" Binding="{Binding InstrumentName}" Width="100"/>
+                            <DataGridTextColumn Header="Price" Binding="{Binding Price, StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="CVD Spike" Binding="{Binding CvdSpike, StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="Avg CVD" Binding="{Binding AverageCvd, StringFormat=N0}" Width="90"/>
+                            <DataGridTextColumn Header="Multiplier" Binding="{Binding SpikeMultiplier, StringFormat=N1}" Width="80"/>
+                            <DataGridTextColumn Header="Price Chg %" Binding="{Binding PriceChangePercent, StringFormat=N2}" Width="90"/>
+                            <DataGridTextColumn Header="Expected Move" Binding="{Binding ExpectedMove}" Width="120"/>
+                            <DataGridTextColumn Header="Confidence" Binding="{Binding Confidence}" Width="90"/>
+                            <DataGridTextColumn Header="Time" Binding="{Binding Timestamp, StringFormat=HH:mm:ss}" Width="100"/>
+                        </DataGrid.Columns>
+                    </DataGrid>-->
+                    <!--<DataGrid x:Name="DataGridCVD"
+          Margin="10"
+          AutoGenerateColumns="False"
+          IsReadOnly="True"
+          HeadersVisibility="Column"
+          GridLinesVisibility="None"
+          Foreground="black"
+          FontSize="13">
+
+                        <DataGrid.Columns>
+
+                            <DataGridTextColumn Header="Time" Binding="{Binding candle_time, StringFormat=HH:mm}" Width="70"/>
+
+                            <DataGridTextColumn Header="Open"  Binding="{Binding open_price,  StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="High"  Binding="{Binding high_price,  StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="Low"   Binding="{Binding low_price,   StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="Close" Binding="{Binding close_price, StringFormat=N2}" Width="80"/>
+
+                            <DataGridTextColumn Header="Volume" Binding="{Binding total_volume, StringFormat=N0}" Width="110"/>
+                            <DataGridTextColumn Header="Delta" Binding="{Binding total_delta,  StringFormat=N0}" Width="90"/>
+                            <DataGridTextColumn Header="VolumeInlakh" Binding="{Binding Volume_Lakh, StringFormat=N0}" Width="110"/>
+                            <DataGridTextColumn Header="DeltaInLakh" Binding="{Binding Delta_Lakh,  StringFormat=N0}" Width="90"/>
+                            <DataGridTextColumn Header="OI"   Binding="{Binding last_oi,    StringFormat=N0}" Width="110"/>
+                            <DataGridTextColumn Header="OI Δ" Binding="{Binding oi_change,  StringFormat=N0}" Width="90"/>
+
+                            <DataGridTextColumn Header="Buy %"  Binding="{Binding buy_strength_pct,  StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="Sell %" Binding="{Binding sell_strength_pct, StringFormat=N2}" Width="80"/>
+
+                            <DataGridTextColumn Header="Delta Sentiment" Binding="{Binding delta_sentiment}" Width="130"/>
+
+                            <DataGridTextColumn Header="Signal" Binding="{Binding signal_type}" Width="130"/>
+
+                            <DataGridTextColumn Header="Divergence" Binding="{Binding divergence}" Width="150"/>
+
+                        </DataGrid.Columns>
+
+                    </DataGrid>-->
+                    <DataGrid x:Name="DataGridCVD"
+          Margin="10"
+          AutoGenerateColumns="False"
+          IsReadOnly="True"
+          HeadersVisibility="Column"
+          GridLinesVisibility="None"
+          Foreground="black"
+          FontSize="13">
+
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Time" Binding="{Binding candle_time, StringFormat=HH:mm}" Width="70"/>
+                            <!--<DataGridTextColumn Header="Open" Binding="{Binding open_price, StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="High" Binding="{Binding high_price, StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="Low" Binding="{Binding low_price, StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="Close" Binding="{Binding close_price, StringFormat=N2}" Width="80"/>
+
+                            <DataGridTextColumn Header="Volume" Binding="{Binding total_volume, StringFormat=N0}" Width="110"/>
+                            <DataGridTextColumn Header="Delta" Binding="{Binding total_delta, StringFormat=N0}" Width="90"/>-->
+                            <DataGridTextColumn Header="VolumeInLakh" Binding="{Binding volume_lakh, StringFormat=N2}" Width="110"/>
+                            <DataGridTextColumn Header="DeltaInLakh" Binding="{Binding delta_lakh, StringFormat=N2}" Width="90"/>
+                            <DataGridTextColumn Header="Cumulative CVD" Binding="{Binding cumulative_cvd_lakh, StringFormat=N2}" Width="120"/>
+
+                            <DataGridTextColumn Header="OI" Binding="{Binding last_oi, StringFormat=N0}" Width="110"/>
+                            <DataGridTextColumn Header="OI Δ" Binding="{Binding oi_change, StringFormat=N0}" Width="90"/>
+
+                            <DataGridTextColumn Header="Open=High" Binding="{Binding open_equals_high}" Width="90"/>
+                            <DataGridTextColumn Header="Open=Low" Binding="{Binding open_equals_low}" Width="90"/>
+                            <DataGridTextColumn Header="Candle Strength" Binding="{Binding candle_strength_pct, StringFormat=N1}" Width="100"/>
+
+                            <DataGridTextColumn Header="Buy %" Binding="{Binding buy_strength_pct, StringFormat=N2}" Width="80"/>
+                            <DataGridTextColumn Header="Sell %" Binding="{Binding sell_strength_pct, StringFormat=N2}" Width="80"/>
+
+                            <DataGridTextColumn Header="Delta Sentiment" Binding="{Binding delta_sentiment}" Width="130"/>
+                            <DataGridTextColumn Header="Signal" Binding="{Binding signal_type}" Width="130"/>
+                            <DataGridTextColumn Header="Divergence" Binding="{Binding divergence}" Width="150"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                </TabItem>
+                <TabItem Header="Nifty">
+                    <DataGrid x:Name="DataGrid1"
+            Grid.Row="1"
+            AutoGenerateColumns="False"
+            IsReadOnly="True"
+            FontSize="13"
+            AlternatingRowBackground="#FFF7F7F7">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Bucket Time" Binding="{Binding BlockTime}" Width="150"/>
+                            <DataGridTextColumn Header="Vol (L)" Binding="{Binding VolumeLakh, StringFormat=N2}" Width="90"/>
+                            <DataGridTextColumn Header="Delta (L)" Binding="{Binding DeltaLakh, StringFormat=N2}" Width="90"/>
+                            <DataGridTextColumn Header="Cum CVD (L)" Binding="{Binding CumCVDLakh, StringFormat=N2}" Width="110"/>
+                            <DataGridTextColumn Header="Weighted Score" Binding="{Binding WeightedScore, StringFormat=N2}" Width="120"/>
+                            <DataGridTextColumn Header="Signal" Binding="{Binding Signal}" Width="120"/>
+                            <DataGridTextColumn Header="Alert" Binding="{Binding Alert}" Width="160"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                </TabItem>
+                <TabItem Header="Spike">
+                    <DataGrid x:Name="dgSectorCVD" AutoGenerateColumns="False">
+                        <DataGrid.Columns>
+                            
+                            <!-- Bank -->
+                            <DataGridTextColumn Header="Bank Delta" Binding="{Binding BankDelta}" Width="100" />
+                            <DataGridTextColumn Header="Bank CVD" Binding="{Binding BankCVD}" Width="100" />
+                            <DataGridTextColumn Header="Bank Vol" Binding="{Binding BankVolume}" Width="100" />
+
+                            <!-- IT -->
+                            <DataGridTextColumn Header="IT Delta" Binding="{Binding ITDelta}" Width="100" />
+                            <DataGridTextColumn Header="IT CVD" Binding="{Binding ITCVD}" Width="100" />
+                            <DataGridTextColumn Header="IT Vol" Binding="{Binding ITVolume}" Width="100" />
+
+                            <!-- Reliance -->
+                            <DataGridTextColumn Header="RIL Delta" Binding="{Binding RILDelta}" Width="100" />
+                            <DataGridTextColumn Header="RIL CVD" Binding="{Binding RILCVD}" Width="100" />
+                            <DataGridTextColumn Header="RIL Vol" Binding="{Binding RILVolume}" Width="100" />
+
+                            <DataGridTextColumn Header="WeightedScore" Binding="{Binding WeightedScore}" Width="100" />
+                            <DataGridTextColumn Header="Signal" Binding="{Binding Signal}" Width="100" />
+                        </DataGrid.Columns>
+
+                    </DataGrid>
+                    
+                </TabItem>
+                <TabItem Header="Spike1">
+                    <DataGrid x:Name="CupPatternGrid" AutoGenerateColumns="True"/>
                 </TabItem>
             </TabControl>
 
             <!-- Output log area -->
-            <TextBox x:Name="OutputTextBox" Grid.Row="1" Margin="6" Foreground="LightGray" Background="#080808" IsReadOnly="True" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"/>
+            <TextBox x:Name="OutputTextBox" Grid.Row="1" Visibility="Collapsed" Margin="6" Foreground="LightGray" Background="#080808" IsReadOnly="True" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"/>
         </Grid>
 
         <!-- Database Insertion Status Panel -->
