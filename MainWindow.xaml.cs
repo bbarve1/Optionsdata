@@ -94,7 +94,7 @@ namespace CVD
             chartHelper = new DrawCharts(SymbolCombo, TimeframeCombo, DatePickerBox, PriceChart, CvdChart);
             chartHelper.LoadSymbols();
             InitializeScanners();
-            PopulateEndTimeComboBox();
+            //PopulateEndTimeComboBox();
             Getsymbollist();
             Timecom.Items.Add(1);
             Timecom.Items.Add(5);
@@ -165,7 +165,8 @@ namespace CVD
                 OutputTextBox.AppendText($"Scanning {instruments.Count} instruments...\n");
 
                 var selectedDate = EndDatePicker.SelectedDate.Value;
-                var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+                var selectedTime = DateTime.ParseExact("15:30:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+
 
                 endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
                                       selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
@@ -235,17 +236,8 @@ namespace CVD
             }
         }
 
-        // Helper method for TakeLast compatibility
-        private static List<T> TakeLast<T>(List<T> source, int count)
-        {
-            if (source == null || count <= 0)
-                return new List<T>();
-
-            if (count >= source.Count)
-                return source.ToList();
-
-            return source.Skip(source.Count - count).ToList();
-        }
+        
+        
         #endregion
 
 
@@ -1147,42 +1139,32 @@ namespace CVD
             await RunScanners();
         }
 
-        private void PopulateEndTimeComboBox()
-        {
-            EndTimeComboBox.Items.Clear();
-            for (int i = 0; i <= 400; i++)
-            {
-                var time = endIST.AddMinutes(i);
-                EndTimeComboBox.Items.Add(time.ToString("HH:mm:ss"));
-            }
 
-            EndTimeComboBox.SelectedItem = endIST.ToString("HH:mm:ss");
-        }
 
         private void EndTimeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             //UpdateEndIST();
         }
-        private void UpdateEndIST()
-        {
-            if (EndDatePicker.SelectedDate != null && EndTimeComboBox.SelectedItem != null)
-            {
-                var selectedDate = EndDatePicker.SelectedDate.Value;
-                var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+        //private void UpdateEndIST()
+        //{
+        //    if (EndDatePicker.SelectedDate != null && EndTimeComboBox.SelectedItem != null)
+        //    {
+        //        var selectedDate = EndDatePicker.SelectedDate.Value;
+        //        var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
 
-                endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
-                                      selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
-                UpdateTimeRangeDisplay();
-            }
-        }
+        //        endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+        //                              selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+        //        UpdateTimeRangeDisplay();
+        //    }
+        //}
         private void UpdateTimeRangeDisplay()
         {
             //EndTimeComboBox.Text = $"Start: {startIST:yyyy-MM-dd HH:mm:ss} | End: {endIST:yyyy-MM-dd HH:mm:ss}";
         }
-        private void EndDatePicker_SelectedDateChanged(object sender, SelectionChangedEventArgs e)
-        {
-            UpdateEndIST();
-        }
+        //private void EndDatePicker_SelectedDateChanged(object sender, SelectionChangedEventArgs e)
+        //{
+        //    UpdateEndIST();
+        //}
 
         //        private async void Search_Click(object sender, RoutedEventArgs e)
         //        {
@@ -1361,6 +1343,10 @@ namespace CVD
         //            MessageBox.Show("Done");
         //        }
 
+        private async void ScanCvdSpikesButton(object sender, RoutedEventArgs e)
+        {
+
+        }
         private async void Search_Click(object sender, RoutedEventArgs e)
         {
             if (InstrumentCombo.SelectedItem == null)
@@ -1373,17 +1359,13 @@ namespace CVD
                 MessageBox.Show("Please select Time Interval.");
                 return;
             }
-            if (EndDatePicker.SelectedDate == null)
-            {
-                MessageBox.Show("Please select End Date.");
-                return;
-            }
 
             try
             {
                 var selectedDate = EndDatePicker.SelectedDate.Value;
-                var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+
                 var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+                var selectedTime = DateTime.ParseExact("15:30:00", "HH:mm:ss", CultureInfo.InvariantCulture);
 
                 startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
                                       firsttime.Hour, firsttime.Minute, firsttime.Second);
@@ -1873,8 +1855,9 @@ ORDER BY candle_time ASC;
                 }
 
                 var selectedDate = EndDatePicker.SelectedDate.Value;
-                var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+                //var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
                 var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+                var selectedTime = DateTime.ParseExact("15:30:00", "HH:mm:ss", CultureInfo.InvariantCulture);
 
                 var startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
                                       firsttime.Hour, firsttime.Minute, firsttime.Second);
@@ -2118,7 +2101,7 @@ ORDER BY bucket_time;
 
             return result;
         }
-        
+
 
 
         // Normalize and combine sector CVD into weighted score (0..100)
@@ -2169,7 +2152,7 @@ ORDER BY bucket_time;
 
 
         // small extension to fetch value or default
-        
+
 
         private readonly Dictionary<string, double> _stockWeightages = new Dictionary<string, double>
 {
@@ -2178,9 +2161,9 @@ ORDER BY bucket_time;
     {"HDFCBANK FUT 30 DEC 25", 7.3},
     {"TCS FUT 30 DEC 25", 5.4},
     {"ICICIBANK FUT 30 DEC 25", 7.1},
-    
+
 };
-        
+
 
         private async void Nifty_Click(object sender, RoutedEventArgs e)
         {
@@ -2189,15 +2172,11 @@ ORDER BY bucket_time;
                 MessageBox.Show("Please select Time Interval.");
                 return;
             }
-            if (EndDatePicker.SelectedDate == null)
-            {
-                MessageBox.Show("Please select End Date.");
-                return;
-            }
 
             var selectedDate = EndDatePicker.SelectedDate.Value;
-            var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+
             var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+            var selectedTime = DateTime.ParseExact("15:30:00", "HH:mm:ss", CultureInfo.InvariantCulture);
 
             var startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
                                   firsttime.Hour, firsttime.Minute, firsttime.Second);
@@ -2528,9 +2507,9 @@ ORDER BY bucket_time;
             }
 
             var selectedDate = EndDatePicker.SelectedDate.Value;
-            var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
+            //var selectedTime = DateTime.ParseExact(EndTimeComboBox.SelectedItem.ToString(), "HH:mm:ss", CultureInfo.InvariantCulture);
             var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
-
+            var selectedTime = DateTime.ParseExact("15:30:00", "HH:mm:ss", CultureInfo.InvariantCulture);
             var startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
                                   firsttime.Hour, firsttime.Minute, firsttime.Second);
             var endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
@@ -3848,6 +3827,1074 @@ LIMIT 100;
             return results;
         }
 
+        //        private async void ScanCvdSpikesButton_Click(object sender, RoutedEventArgs e)
+        //        {
+        //            try
+        //            {
+        //                double spikeThreshold = 10.0;
+        //                double maxPriceMovePercent = 0.3;
+
+        //                var selectedDate = DateTime.Today;
+        //                if (EndDatePicker.SelectedDate != null)
+        //                {
+        //                    selectedDate = EndDatePicker.SelectedDate.Value;
+        //                }
+
+        //                var startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day, 9, 15, 0);
+        //                var endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day, 15, 30, 0);
+
+        //                var startUtc = startIST.ToUniversalTime();
+        //                var endUtc = endIST.ToUniversalTime();
+
+        //                using (var con = new NpgsqlConnection(_connectionString))
+        //                {
+        //                    await con.OpenAsync();
+
+        //                    // SIMPLIFIED QUERY - Focus on core CVD spike detection
+        //                    string sql = @"
+        //WITH tick_data AS (
+        //    SELECT 
+        //        instrument_name,
+        //        ts AT TIME ZONE 'Asia/Kolkata' as ts_ist,
+        //        price,
+        //        size,
+        //        oi,
+        //        -- Tick direction
+        //        CASE 
+        //            WHEN price > LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN 'BUY'
+        //            WHEN price < LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN 'SELL'
+        //            ELSE 'UNCHANGED'
+        //        END as tick_dir
+        //    FROM raw_ticks
+        //    WHERE ts >= @startUtc AND ts <= @endUtc
+        //),
+        //minute_data AS (
+        //    SELECT 
+        //        instrument_name,
+        //        DATE_TRUNC('minute', ts_ist) as candle_time,
+        //        -- Get first price as open
+        //        FIRST_VALUE(price) OVER w as open_price,
+        //        -- Get last price as close
+        //        LAST_VALUE(price) OVER w as close_price,
+        //        -- Get high and low
+        //        MAX(price) OVER w as high_price,
+        //        MIN(price) OVER w as low_price,
+        //        -- Calculate volume and delta
+        //        SUM(size) OVER w as volume,
+        //        SUM(CASE WHEN tick_dir = 'BUY' THEN size ELSE 0 END) OVER w as buy_volume,
+        //        SUM(CASE WHEN tick_dir = 'SELL' THEN size ELSE 0 END) OVER w as sell_volume,
+        //        -- Get last OI
+        //        LAST_VALUE(oi) OVER w as last_oi
+        //    FROM tick_data
+        //    WINDOW w AS (PARTITION BY instrument_name, DATE_TRUNC('minute', ts_ist) 
+        //                 ORDER BY ts_ist 
+        //                 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+        //),
+        //unique_minutes AS (
+        //    SELECT DISTINCT
+        //        instrument_name,
+        //        candle_time,
+        //        open_price,
+        //        close_price,
+        //        high_price,
+        //        low_price,
+        //        volume,
+        //        buy_volume,
+        //        sell_volume,
+        //        (buy_volume - sell_volume) as minute_delta,
+        //        last_oi
+        //    FROM minute_data
+        //),
+        //cvd_calc AS (
+        //    SELECT 
+        //        *,
+        //        SUM(minute_delta) OVER (PARTITION BY instrument_name ORDER BY candle_time) as cumulative_cvd,
+        //        AVG(ABS(minute_delta)) OVER (
+        //            PARTITION BY instrument_name 
+        //            ORDER BY candle_time 
+        //            ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        //        ) as avg_cvd_20min,
+        //        ABS((close_price - open_price) * 100.0 / NULLIF(open_price, 0)) as price_move_pct,
+        //        last_oi - LAG(last_oi) OVER (PARTITION BY instrument_name ORDER BY candle_time) as oi_change
+        //    FROM unique_minutes
+        //),
+        //spike_check AS (
+        //    SELECT 
+        //        *,
+        //        CASE 
+        //            WHEN avg_cvd_20min > 0 
+        //            THEN ABS(minute_delta) / avg_cvd_20min 
+        //            ELSE 0 
+        //        END as cvd_spike_ratio
+        //    FROM cvd_calc
+        //    WHERE avg_cvd_20min IS NOT NULL
+        //)
+        //SELECT 
+        //    instrument_name,
+        //    candle_time,
+        //    open_price,
+        //    close_price,
+        //    high_price,
+        //    low_price,
+        //    volume,
+        //    minute_delta,
+        //    cumulative_cvd,
+        //    avg_cvd_20min,
+        //    cvd_spike_ratio,
+        //    price_move_pct,
+        //    oi_change,
+        //    CASE 
+        //        WHEN minute_delta > 0 THEN 'BUY_SPIKE'
+        //        ELSE 'SELL_SPIKE'
+        //    END as spike_direction,
+        //    CASE 
+        //        WHEN minute_delta > 0 AND ABS(minute_delta) > 50000 THEN 'Strong Buyers'
+        //        WHEN minute_delta > 0 AND ABS(minute_delta) > 10000 THEN 'Buyers Aggressive'
+        //        WHEN minute_delta < 0 AND ABS(minute_delta) > 50000 THEN 'Strong Sellers'
+        //        WHEN minute_delta < 0 AND ABS(minute_delta) > 10000 THEN 'Sellers Aggressive'
+        //        ELSE 'Neutral'
+        //    END as delta_sentiment,
+        //    -- SIMPLE TRADING SIGNAL
+        //    CASE 
+        //        WHEN cvd_spike_ratio >= @spikeThreshold 
+        //             AND price_move_pct <= @maxPriceMovePct
+        //             AND minute_delta > 0
+        //             AND oi_change > 0
+        //            THEN 'LONG BREAKOUT SETUP'
+        //        WHEN cvd_spike_ratio >= @spikeThreshold 
+        //             AND price_move_pct <= @maxPriceMovePct
+        //             AND minute_delta < 0
+        //             AND oi_change > 0
+        //            THEN 'SHORT BREAKOUT SETUP'
+        //        ELSE 'NO_SIGNAL'
+        //    END as trading_signal
+        //FROM spike_check
+        //WHERE cvd_spike_ratio >= @spikeThreshold 
+        //  AND price_move_pct <= @maxPriceMovePct
+        //  AND ABS(minute_delta) > 10000
+        //ORDER BY cvd_spike_ratio DESC, candle_time DESC
+        //LIMIT 100;";
+
+        //                    using (var cmd = new NpgsqlCommand(sql, con))
+        //                    {
+        //                        cmd.Parameters.AddWithValue("@startUtc", startUtc);
+        //                        cmd.Parameters.AddWithValue("@endUtc", endUtc);
+        //                        cmd.Parameters.AddWithValue("@spikeThreshold", spikeThreshold);
+        //                        cmd.Parameters.AddWithValue("@maxPriceMovePct", maxPriceMovePercent);
+
+        //                        var dt = new DataTable();
+        //                        using (var reader = await cmd.ExecuteReaderAsync())
+        //                        {
+        //                            dt.Load(reader);
+        //                        }
+
+        //                        DataGridCVDSpikes.ItemsSource = dt.DefaultView;
+        //                        MessageBox.Show($"Found {dt.Rows.Count} CVD spike signals");
+        //                    }
+        //                }
+        //            }
+        //            catch (Exception ex)
+        //            {
+        //                MessageBox.Show($"Error: {ex.Message}");
+        //            }
+        //        }
+
+        private async void ScanCvdSpikesButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                double spikeThreshold = 10.0;
+                double maxPriceMovePercent = 0.3;
+
+                var selectedDate = DateTime.Today;
+                if (EndDatePicker.SelectedDate != null)
+                {
+                    selectedDate = EndDatePicker.SelectedDate.Value;
+                }
+
+                var startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day, 9, 15, 0);
+                var endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day, 15, 30, 0);
+
+                var startUtc = startIST.ToUniversalTime();
+                var endUtc = endIST.ToUniversalTime();
+
+                using (var con = new NpgsqlConnection(_connectionString))
+                {
+                    await con.OpenAsync();
+
+                    // CLEAN, WORKING VERSION - No ROUND() function errors
+                    string sql = @"
+-- Step 1: Basic CVD calculation
+WITH tick_cvd AS (
+    SELECT 
+        instrument_name,
+        ts,
+        price,
+        size,
+        CASE 
+            WHEN price > LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN size
+            WHEN price < LAG(price) OVER (PARTITION BY instrument_name ORDER BY ts) THEN -size
+            ELSE 0 
+        END as tick_cvd
+    FROM raw_ticks
+    WHERE ts >= @startUtc AND ts <= @endUtc
+),
+-- Step 2: Create 15-minute candles
+fifteen_min_buckets AS (
+    SELECT 
+        instrument_name,
+        -- Create 15-minute buckets
+        DATE_TRUNC('hour', ts) + 
+            FLOOR(EXTRACT(MINUTE FROM ts) / 15) * INTERVAL '15 minutes' as bucket_time,
+        price,
+        tick_cvd,
+        size,
+        ROW_NUMBER() OVER (PARTITION BY instrument_name, 
+                          DATE_TRUNC('hour', ts) + 
+                          FLOOR(EXTRACT(MINUTE FROM ts) / 15) * INTERVAL '15 minutes' 
+                          ORDER BY ts) as rn_asc,
+        ROW_NUMBER() OVER (PARTITION BY instrument_name, 
+                          DATE_TRUNC('hour', ts) + 
+                          FLOOR(EXTRACT(MINUTE FROM ts) / 15) * INTERVAL '15 minutes' 
+                          ORDER BY ts DESC) as rn_desc
+    FROM tick_cvd
+),
+-- Step 3: Aggregate to get candle data
+candle_data AS (
+    SELECT 
+        instrument_name,
+        bucket_time,
+        MAX(CASE WHEN rn_asc = 1 THEN price END) as open_price,
+        MAX(CASE WHEN rn_desc = 1 THEN price END) as close_price,
+        MAX(price) as high_price,
+        MIN(price) as low_price,
+        SUM(tick_cvd) as fifteen_min_cvd,
+        SUM(size) as volume
+    FROM fifteen_min_buckets
+    GROUP BY instrument_name, bucket_time
+),
+-- Step 4: Calculate rolling average
+with_stats AS (
+    SELECT 
+        *,
+        AVG(ABS(fifteen_min_cvd)) OVER (
+            PARTITION BY instrument_name 
+            ORDER BY bucket_time 
+            ROWS BETWEEN 19 PRECEDING AND CURRENT ROW
+        ) as avg_cvd_20
+    FROM candle_data
+)
+-- Step 5: Find spikes
+SELECT 
+    instrument_name,
+    TO_CHAR(bucket_time AT TIME ZONE 'Asia/Kolkata', 'HH24:MI') as candle_time,
+    open_price,
+    close_price,
+    high_price,
+    low_price,
+    fifteen_min_cvd as delta,
+    volume,
+    avg_cvd_20,
+    -- Calculate spike ratio without ROUND()
+    CASE 
+        WHEN avg_cvd_20 > 0 
+        THEN ABS(fifteen_min_cvd) / avg_cvd_20 
+        ELSE 0 
+    END as spike_ratio,
+    -- Calculate price movement percentage
+    CASE 
+        WHEN open_price > 0 
+        THEN ABS((close_price - open_price) * 100.0 / open_price)
+        ELSE 0 
+    END as price_move_pct,
+    -- Simple signal
+    CASE 
+        WHEN avg_cvd_20 > 0 
+             AND ABS(fifteen_min_cvd) / avg_cvd_20 >= @spikeThreshold 
+             AND ABS((close_price - open_price) * 100.0 / open_price) <= @maxPriceMovePct
+             AND fifteen_min_cvd > 0
+            THEN 'LONG BREAKOUT'
+        WHEN avg_cvd_20 > 0 
+             AND ABS(fifteen_min_cvd) / avg_cvd_20 >= @spikeThreshold 
+             AND ABS((close_price - open_price) * 100.0 / open_price) <= @maxPriceMovePct
+             AND fifteen_min_cvd < 0
+            THEN 'SHORT BREAKOUT'
+        ELSE 'NO SIGNAL'
+    END as signal
+FROM with_stats
+WHERE avg_cvd_20 IS NOT NULL
+  AND avg_cvd_20 > 0
+  AND fifteen_min_cvd != 0
+  AND bucket_time >= @startUtc
+  AND bucket_time <= @endUtc
+ORDER BY 
+    CASE 
+        WHEN avg_cvd_20 > 0 THEN ABS(fifteen_min_cvd) / avg_cvd_20 
+        ELSE 0 
+    END DESC,
+    bucket_time DESC
+LIMIT 100;";
+
+                    using (var cmd = new NpgsqlCommand(sql, con))
+                    {
+                        cmd.Parameters.AddWithValue("@startUtc", startUtc);
+                        cmd.Parameters.AddWithValue("@endUtc", endUtc);
+                        cmd.Parameters.AddWithValue("@spikeThreshold", spikeThreshold);
+                        cmd.Parameters.AddWithValue("@maxPriceMovePct", maxPriceMovePercent);
+
+                        // Load DataTable
+                        var dt = new DataTable();
+                        using (var reader = await cmd.ExecuteReaderAsync())
+                        {
+                            dt.Load(reader);
+                        }
+
+                        // Ensure writable columns (prevents ReadOnlyException)
+                        dt.Columns["spike_ratio"].ReadOnly = false;
+                        dt.Columns["price_move_pct"].ReadOnly = false;
+
+                        // Create delta_lakhs column if missing
+                        if (!dt.Columns.Contains("delta_lakhs"))
+                        {
+                            dt.Columns.Add("delta_lakhs", typeof(double));
+                        }
+
+                        // Format the data
+                        foreach (DataRow row in dt.Rows)
+                        {
+                            // spike_ratio → 1 decimal
+                            if (row["spike_ratio"] != DBNull.Value)
+                            {
+                                double spikeRatio = Convert.ToDouble(row["spike_ratio"]);
+                                row["spike_ratio"] = Math.Round(spikeRatio, 1);
+                            }
+
+                            // price_move_pct → 3 decimals
+                            if (row["price_move_pct"] != DBNull.Value)
+                            {
+                                double priceMove = Convert.ToDouble(row["price_move_pct"]);
+                                row["price_move_pct"] = Math.Round(priceMove, 3);
+                            }
+
+                            // delta_lakhs → delta / 1,00,000 (2 decimals)
+                            if (row["delta"] != DBNull.Value)
+                            {
+                                double delta = Convert.ToDouble(row["delta"]);
+                                row["delta_lakhs"] = Math.Round(delta / 100000.0, 2);
+                            }
+                        }
+
+
+                        DataGridCVDSpikes.ItemsSource = dt.DefaultView;
+
+                        if (dt.Rows.Count > 0)
+                        {
+                            int totalSignals = dt.Rows.Count;
+                            int longSignals = dt.AsEnumerable()
+                                .Count(row => row["signal"].ToString() == "LONG BREAKOUT");
+                            int shortSignals = dt.AsEnumerable()
+                                .Count(row => row["signal"].ToString() == "SHORT BREAKOUT");
+
+                            MessageBox.Show($"15-Minute CVD Spike Scanner\n\n" +
+                                          $"Total Signals: {totalSignals}\n" +
+                                          $"Long Breakouts: {longSignals}\n" +
+                                          $"Short Breakouts: {shortSignals}");
+                        }
+                        else
+                        {
+                            MessageBox.Show("No CVD spikes found. Try:\n" +
+                                          "1. Reduce spike threshold to 5\n" +
+                                          "2. Increase price move to 0.5%\n" +
+                                          "3. Check if market data exists");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error: {ex.Message}");
+            }
+        }
+        private void EndDatePicker_SelectedDateChanged(object sender, SelectionChangedEventArgs e)
+        {
+
+        }
+
+        private async void cvd_click1(object sender, RoutedEventArgs e)
+        {
+            if (InstrumentCombo.SelectedItem == null)
+            {
+                MessageBox.Show("Please select an instrument.");
+                return;
+            }
+            if (Timecom.SelectedItem == null)
+            {
+                MessageBox.Show("Please select Time Interval.");
+                return;
+            }
+
+            try
+            {
+                var selectedDate = EndDatePicker.SelectedDate.Value;
+
+                var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+                var selectedTime = DateTime.ParseExact("15:30:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+
+                startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                      firsttime.Hour, firsttime.Minute, firsttime.Second);
+
+                endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+                                      selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+
+                string symbol = InstrumentCombo.SelectedItem.ToString();
+                int aggmin = (int)Timecom.SelectedItem; // keep as you had it
+                var startUtc = startIST.ToUniversalTime();
+                var endUtc = endIST.ToUniversalTime();
+
+                using (var con = new NpgsqlConnection(_connectionString))
+                {
+                    await con.OpenAsync();
+
+                    string sql = @"
+WITH ticks AS (
+    SELECT
+        ts,
+        ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+        price,
+        size,
+        bid_price,
+        ask_price,
+        bid_qty,
+        ask_qty,
+        oi,
+        order_imbalance,
+        cvd AS true_cvd_tick,     -- you already have true CVD per tick
+
+        /* --------------------------
+           PRICE-BASED CVD
+        --------------------------- */
+        CASE 
+            WHEN price > LAG(price) OVER (ORDER BY ts) THEN size
+            ELSE 0
+        END AS price_buy,
+
+        CASE 
+            WHEN price < LAG(price) OVER (ORDER BY ts) THEN size
+            ELSE 0
+        END AS price_sell,
+
+
+        /* --------------------------
+           TRUE AGGRESSOR CVD
+        --------------------------- */
+        CASE 
+            WHEN price = ask_price THEN size    -- aggressive buyer
+            ELSE 0
+        END AS true_buy,
+
+        CASE 
+            WHEN price = bid_price THEN size    -- aggressive seller
+            ELSE 0
+        END AS true_sell,
+
+
+        /* --------------------------
+           ABSORPTION DETECTION
+           If large bid/ask qty gets eaten by small price move
+        --------------------------- */
+        CASE 
+            WHEN price = ask_price AND ask_qty > size * 3 THEN 'Ask Absorption'
+            WHEN price = bid_price AND bid_qty > size * 3 THEN 'Bid Absorption'
+            ELSE 'None'
+        END AS absorption_type,
+
+
+        /* --------------------------
+           SPOOFING PROBABILITY
+           If qty suddenly appears & disappears without trades
+        --------------------------- */
+        CASE
+            WHEN (ask_qty + bid_qty) > 0 AND size = 0
+                 AND (ask_qty > LAG(ask_qty) OVER (ORDER BY ts) * 2
+                      OR bid_qty > LAG(bid_qty) OVER (ORDER BY ts) * 2)
+            THEN 'Possible Spoof'
+            ELSE 'Normal'
+        END AS spoof_flag
+
+    FROM raw_ticks
+    WHERE instrument_name = @instrumentName
+      AND ts BETWEEN @startUtc AND @endUtc
+)";
+
+                    using (var cmd = new NpgsqlCommand(sql, con))
+                    {
+                        cmd.Parameters.AddWithValue("instrumentName", symbol);
+                        cmd.Parameters.AddWithValue("startUtc", startUtc);
+                        cmd.Parameters.AddWithValue("endUtc", endUtc);
+                        cmd.Parameters.AddWithValue("aggmin", aggmin);
+
+                        var dt = new DataTable();
+                        using (var reader = await cmd.ExecuteReaderAsync())
+                        {
+                            dt.Load(reader);
+                        }
+
+                        DataGridCVD.ItemsSource = dt.DefaultView;
+                        MessageBox.Show("Done");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                //MessageBox.Show($"Error:"  ex.Message};
+            }
+        }
+        private async void cvd_click(object sender, RoutedEventArgs e)
+        {
+            if (InstrumentCombo.SelectedItem == null)
+            {
+                MessageBox.Show("Please select an instrument.");
+                return;
+            }
+            if (Timecom.SelectedItem == null)
+            {
+                MessageBox.Show("Please select Time Interval.");
+                return;
+            }
+
+            try
+            {
+                var selectedDate = EndDatePicker.SelectedDate.Value.Date;
+
+                var startIST = DateTime.Parse($"{selectedDate:yyyy-MM-dd} 09:15:00");
+                var endIST = DateTime.Parse($"{selectedDate:yyyy-MM-dd} 15:30:00");
+
+                var startUtc = startIST.ToUniversalTime();
+                var endUtc = endIST.ToUniversalTime();
+
+                string symbol = InstrumentCombo.SelectedItem.ToString();
+                int aggmin = Convert.ToInt32(Timecom.SelectedItem);
+
+                using (var con = new NpgsqlConnection(_connectionString))
+                {
+                    await con.OpenAsync();
+
+                    string sql = @"
+WITH
+-- 1) Tick-level classification
+ticks AS (
+    SELECT
+        ts,
+        ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+        instrument_key,
+        instrument_name,
+        price,
+        size,
+        bid_price,
+        bid_qty,
+        ask_price,
+        ask_qty,
+        oi,
+        cvd AS true_cvd_tick,
+
+        CASE WHEN price > LAG(price) OVER (ORDER BY ts) THEN size ELSE 0 END AS price_buy,
+        CASE WHEN price < LAG(price) OVER (ORDER BY ts) THEN size ELSE 0 END AS price_sell,
+
+        CASE WHEN price = ask_price THEN size ELSE 0 END AS true_buy,
+        CASE WHEN price = bid_price THEN size ELSE 0 END AS true_sell,
+
+        CASE WHEN price > (bid_price + ask_price)/2 THEN size ELSE 0 END AS hybrid_buy,
+        CASE WHEN price < (bid_price + ask_price)/2 THEN size ELSE 0 END AS hybrid_sell
+    FROM raw_ticks
+    WHERE instrument_name = @instrumentName
+      AND ts BETWEEN @startUtc AND @endUtc
+),
+
+-- 2) Add candle_time
+bucketed AS (
+    SELECT
+        *,
+        (
+            date_trunc('minute', ts_ist)
+            - make_interval(mins => EXTRACT(MINUTE FROM ts_ist)::int % @aggmin)
+        ) AS candle_time
+    FROM ticks
+),
+
+-- 3) Row numbers for OHLC
+ordered_ticks AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (PARTITION BY candle_time ORDER BY ts_ist ASC)  AS rn_asc,
+        ROW_NUMBER() OVER (PARTITION BY candle_time ORDER BY ts_ist DESC) AS rn_desc
+    FROM bucketed
+),
+
+-- 4) Candle aggregation
+candles AS (
+    SELECT
+        candle_time,
+
+        MAX(price) FILTER (WHERE rn_asc = 1) AS open_price,
+        MAX(price) AS high_price,
+        MIN(price) AS low_price,
+        MAX(price) FILTER (WHERE rn_desc = 1) AS close_price,
+
+        SUM(size) AS total_volume,
+        MAX(oi) AS last_oi,
+
+        SUM(price_buy)  AS price_buy_delta,
+        SUM(price_sell) AS price_sell_delta,
+
+        SUM(true_buy)   AS true_buy_delta,
+        SUM(true_sell)  AS true_sell_delta,
+
+        SUM(hybrid_buy) AS hybrid_buy_delta,
+        SUM(hybrid_sell) AS hybrid_sell_delta,
+
+        MAX(true_cvd_tick) AS true_cvd_point
+    FROM ordered_ticks
+    GROUP BY candle_time
+    ORDER BY candle_time
+),
+
+-- 5) Add cumulative CVDs
+cvd_running AS (
+    SELECT
+        *,
+        SUM(price_buy_delta - price_sell_delta)
+            OVER (ORDER BY candle_time) AS cum_price_delta,
+
+        SUM(true_buy_delta - true_sell_delta)
+            OVER (ORDER BY candle_time) AS cum_true_delta,
+
+        SUM(hybrid_buy_delta - hybrid_sell_delta)
+            OVER (ORDER BY candle_time) AS cum_hybrid_delta
+    FROM candles
+),
+
+-- 6) Final CVD + divergence
+final_cvd AS (
+    SELECT
+        candle_time,
+        open_price, high_price, low_price, close_price,
+        total_volume, last_oi,
+
+        (price_buy_delta - price_sell_delta) AS price_delta,
+        (true_buy_delta - true_sell_delta) AS true_delta,
+        (hybrid_buy_delta - hybrid_sell_delta) AS hybrid_delta,
+
+        price_buy_delta, price_sell_delta,
+        true_buy_delta, true_sell_delta,
+        hybrid_buy_delta, hybrid_sell_delta,
+
+        cum_price_delta,
+        cum_true_delta,
+        cum_hybrid_delta,
+
+        close_price - LAG(close_price) OVER (ORDER BY candle_time) AS price_change,
+        last_oi - LAG(last_oi) OVER (ORDER BY candle_time) AS oi_change,
+
+        LAG(close_price)        OVER (ORDER BY candle_time) AS prev_close,
+        LAG(cum_true_delta)     OVER (ORDER BY candle_time) AS prev_cum_true_delta
+    FROM cvd_running
+)
+
+
+-- RESULT 2: Candles
+SELECT
+    candle_time,
+
+    ROUND(((price_buy_delta - price_sell_delta) / 100000.0)::numeric, 2) AS Price_CVD,
+    ROUND(((true_buy_delta - true_sell_delta) / 100000.0)::numeric, 2) AS True_CVD,
+    ROUND(((hybrid_buy_delta - hybrid_sell_delta) / 100000.0)::numeric, 2) AS Hybrid_CVD,
+    ROUND((total_volume / 100000.0)::numeric, 2) AS total_volume,
+    ROUND((last_oi / 100000.0)::numeric, 2) AS last_oi,
+    ROUND((true_cvd_point / 100000.0)::numeric, 2) AS true_cvd_point
+
+FROM candles
+ORDER BY candle_time;
+";
+
+                    //-- RESULT 1: Ticks
+                    //SELECT *
+                    //FROM ticks
+                    //ORDER BY ts_ist;
+
+                    //SELECT
+                    //    candle_time,
+                    //    price_delta, cum_price_delta,
+                    //    true_delta, cum_true_delta,
+                    //    hybrid_delta, cum_hybrid_delta,
+                    //    price_change, oi_change,
+
+                    //    CASE
+                    //        WHEN prev_close IS NOT NULL
+                    //             AND close_price > prev_close
+                    //             AND cum_true_delta < prev_cum_true_delta
+                    //             THEN 'Bearish Divergence'
+                    //        WHEN prev_close IS NOT NULL
+                    //             AND close_price < prev_close
+                    //             AND cum_true_delta > prev_cum_true_delta
+                    //             THEN 'Bullish Divergence'
+                    //        ELSE 'Neutral'
+                    //    END AS cvd_divergence
+                    //FROM final_cvd
+                    //ORDER BY candle_time;
+
+                    using (var cmd = new NpgsqlCommand(sql, con))
+                    {
+                        cmd.Parameters.AddWithValue("instrumentName", symbol);
+                        cmd.Parameters.AddWithValue("startUtc", startUtc);
+                        cmd.Parameters.AddWithValue("endUtc", endUtc);
+                        cmd.Parameters.AddWithValue("aggmin", aggmin);
+
+                        using (var reader = await cmd.ExecuteReaderAsync())
+                        {
+                            // RESULT 1: ticks
+                            var ticksDT = new DataTable();
+                            ticksDT.Load(reader);
+                            DataGridCVDSpikes.ItemsSource = ticksDT.DefaultView;
+
+                            //await reader.NextResultAsync();
+
+                            //// RESULT 2: candles
+                            //var candlesDT = new DataTable();
+                            //candlesDT.Load(reader);
+                            ////CandleGrid.ItemsSource = candlesDT.DefaultView;
+
+                            //await reader.NextResultAsync();
+
+                            //// RESULT 3: CVD + divergence
+                            //var cvdDT = new DataTable();
+                            //cvdDT.Load(reader);
+                            //CVDGrid.ItemsSource = cvdDT.DefaultView;
+                        }
+                    }
+                }
+
+                MessageBox.Show("Orderflow CVD loaded.");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error: {ex.Message}");
+            }
+        }
+
+
+
+        //        private async void cvd_click(object sender, RoutedEventArgs e)
+        //        {
+        //            if (InstrumentCombo.SelectedItem == null)
+        //            {
+        //                MessageBox.Show("Please select an instrument.");
+        //                return;
+        //            }
+        //            if (Timecom.SelectedItem == null)
+        //            {
+        //                MessageBox.Show("Please select Time Interval.");
+        //                return;
+        //            }
+
+        //            try
+        //            {
+        //                var selectedDate = EndDatePicker.SelectedDate.Value;
+
+        //                var firsttime = DateTime.ParseExact("09:15:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+        //                var selectedTime = DateTime.ParseExact("15:30:00", "HH:mm:ss", CultureInfo.InvariantCulture);
+
+        //                startIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+        //                                      firsttime.Hour, firsttime.Minute, firsttime.Second);
+
+        //                endIST = new DateTime(selectedDate.Year, selectedDate.Month, selectedDate.Day,
+        //                                      selectedTime.Hour, selectedTime.Minute, selectedTime.Second);
+
+        //                string symbol = InstrumentCombo.SelectedItem.ToString();
+        //                int aggmin = (int)Timecom.SelectedItem;
+        //                var startUtc = startIST.ToUniversalTime();
+        //                var endUtc = endIST.ToUniversalTime();
+
+        //                using (var con = new NpgsqlConnection(_connectionString))
+        //                {
+        //                    await con.OpenAsync();
+
+        //                    string sql = @"
+        //-- Multi-result SQL: ticks, candles, final, absorption rows, divergence rows
+        //WITH ticks AS (
+        //    SELECT
+        //        ts,
+        //        ts AT TIME ZONE 'Asia/Kolkata' AS ts_ist,
+        //        instrument_key,
+        //        instrument_name,
+        //        price,
+        //        size,
+        //        bid_price,
+        //        bid_qty,
+        //        ask_price,
+        //        ask_qty,
+        //        oi,
+        //        order_imbalance,
+        //        cvd AS true_cvd_tick,     -- your True CVD column per tick
+
+        //        /* PRICE-BASED CVD */
+        //        CASE 
+        //            WHEN price > LAG(price) OVER (ORDER BY ts) THEN size
+        //            ELSE 0
+        //        END AS price_buy,
+
+        //        CASE 
+        //            WHEN price < LAG(price) OVER (ORDER BY ts) THEN size
+        //            ELSE 0
+        //        END AS price_sell,
+
+        //        /* TRUE AGGRESSOR CVD (bid/ask) */
+        //        CASE 
+        //            WHEN price = ask_price THEN size
+        //            ELSE 0
+        //        END AS true_buy,
+
+        //        CASE 
+        //            WHEN price = bid_price THEN size
+        //            ELSE 0
+        //        END AS true_sell,
+
+        //        /* ABSORPTION DETECTION */
+        //        CASE 
+        //            WHEN price = ask_price AND ask_qty > size * 3 THEN 'Ask Absorption'
+        //            WHEN price = bid_price AND bid_qty > size * 3 THEN 'Bid Absorption'
+        //            ELSE 'None'
+        //        END AS absorption_type,
+
+        //        /* SPOOFING PROBABILITY (simple heuristic) */
+        //        CASE
+        //            WHEN (ask_qty + bid_qty) > 0 AND size = 0
+        //                 AND (ask_qty > LAG(ask_qty) OVER (ORDER BY ts) * 2
+        //                      OR bid_qty > LAG(bid_qty) OVER (ORDER BY ts) * 2)
+        //            THEN 'Possible Spoof'
+        //            ELSE 'Normal'
+        //        END AS spoof_flag
+
+        //    FROM raw_ticks
+        //    WHERE instrument_name = @instrumentName
+        //      AND ts BETWEEN @startUtc AND @endUtc
+        //),
+
+        //bucketed AS (
+        //    SELECT
+        //        (date_trunc('minute', ts_ist)
+        //           - make_interval(mins => EXTRACT(MINUTE FROM ts_ist)::int % @aggmin)) AS candle_time,
+
+        //        ts_ist,
+        //        ts,
+        //        instrument_key,
+        //        instrument_name,
+        //        price, size, oi,
+        //        price_buy, price_sell,
+        //        true_buy, true_sell,
+        //        order_imbalance, absorption_type, spoof_flag,
+        //        true_cvd_tick,
+
+        //        ROW_NUMBER() OVER (
+        //            PARTITION BY (date_trunc('minute', ts_ist)
+        //              - make_interval(mins => EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))
+        //            ORDER BY ts_ist
+        //        ) AS rn_open,
+
+        //        ROW_NUMBER() OVER (
+        //            PARTITION BY (date_trunc('minute', ts_ist)
+        //              - make_interval(mins => EXTRACT(MINUTE FROM ts_ist)::int % @aggmin))
+        //            ORDER BY ts_ist DESC
+        //        ) AS rn_close
+        //    FROM ticks
+        //),
+
+        //candles AS (
+        //    SELECT
+        //        candle_time,
+        //        MAX(price) FILTER (WHERE rn_open = 1)  AS open_price,
+        //        MAX(price)                             AS high_price,
+        //        MIN(price)                             AS low_price,
+        //        MAX(price) FILTER (WHERE rn_close = 1) AS close_price,
+
+        //        SUM(size) AS total_volume,
+        //        MAX(oi) AS last_oi,
+
+        //        /* PRICE-BASED DELTA */
+        //        SUM(price_buy) AS price_buy_delta,
+        //        SUM(price_sell) AS price_sell_delta,
+
+        //        /* TRUE ORDERFLOW DELTA */
+        //        SUM(true_buy) AS true_buy_delta,
+        //        SUM(true_sell) AS true_sell_delta,
+
+        //        /* HYBRID DELTA = price-based + true */
+        //        SUM(true_buy + price_buy) AS hybrid_buy_delta,
+        //        SUM(true_sell + price_sell) AS hybrid_sell_delta,
+
+        //        /* ORDERFLOW FIELDS */
+        //        SUM(order_imbalance) AS total_order_imbalance,
+        //        COUNT(*) FILTER (WHERE absorption_type <> 'None') AS absorption_count,
+        //        COUNT(*) FILTER (WHERE spoof_flag = 'Possible Spoof') AS spoof_count,
+
+        //        MAX(true_cvd_tick) AS true_cvd_point
+
+        //    FROM bucketed
+        //    GROUP BY candle_time
+        //),
+
+        //final AS (
+        //    SELECT
+        //        *,
+        //        LAG(close_price) OVER (ORDER BY candle_time) AS prev_close,
+        //        LAG(cum_true_delta) OVER (ORDER BY candle_time) AS prev_cum_true_delta
+        //    FROM (
+        //        SELECT
+        //            candle_time,
+        //            open_price, high_price, low_price, close_price,
+        //            total_volume, last_oi,
+
+        //            /* PRICE DELTA + CVD */
+        //            price_buy_delta - price_sell_delta AS price_delta,
+        //            SUM(price_buy_delta - price_sell_delta)
+        //                OVER (ORDER BY candle_time) AS cum_price_delta,
+
+        //            /* TRUE DELTA + CVD */
+        //            true_buy_delta - true_sell_delta AS true_delta,
+        //            SUM(true_buy_delta - true_sell_delta)
+        //                OVER (ORDER BY candle_time) AS cum_true_delta,
+
+        //            /* HYBRID DELTA + CVD */
+        //            hybrid_buy_delta - hybrid_sell_delta AS hybrid_delta,
+        //            SUM(hybrid_buy_delta - hybrid_sell_delta)
+        //                OVER (ORDER BY candle_time) AS cum_hybrid_delta,
+
+        //            /* ORDER IMBALANCE */
+        //            total_order_imbalance,
+        //            SUM(total_order_imbalance)
+        //                OVER (ORDER BY candle_time) AS cum_order_imbalance,
+
+        //            /* OI CHANGE */
+        //            last_oi - LAG(last_oi) OVER (ORDER BY candle_time) AS oi_change,
+
+        //            /* PRICE CHANGE */
+        //            close_price - LAG(close_price) OVER (ORDER BY candle_time) AS price_change,
+
+        //            absorption_count,
+        //            spoof_count
+        //        FROM candles
+        //    ) sub
+        //)
+
+
+        //-- RESULT SET 1: raw tick rows (for Tick Grid)
+        //SELECT
+        //    ts, ts_ist, instrument_key, instrument_name, price, size, bid_price, bid_qty, ask_price, ask_qty, oi,
+        //    order_imbalance, true_cvd_tick, price_buy, price_sell, true_buy, true_sell, absorption_type, spoof_flag
+        //FROM ticks
+        //ORDER BY ts_ist;
+
+        //-- RESULT SET 2: candle rows (OHLC + per-candle deltas)
+        //SELECT
+        //    candle_time, open_price, high_price, low_price, close_price, total_volume, last_oi,
+        //    price_buy_delta, price_sell_delta,
+        //    true_buy_delta, true_sell_delta,
+        //    hybrid_buy_delta, hybrid_sell_delta,
+        //    total_order_imbalance, absorption_count, spoof_count, true_cvd_point
+        //FROM candles
+        //ORDER BY candle_time;
+
+        //-- RESULT SET 3: final CVD + cumulative numbers (for CVD grid)
+        //SELECT
+        //    candle_time,
+        //    price_delta, price_cvd,
+        //    true_delta, true_cvd,
+        //    hybrid_delta, hybrid_cvd,
+        //    total_order_imbalance, cum_order_imbalance,
+        //    oi_change, price_change,
+        //    absorption_count, spoof_count,
+        //    cvd_divergence
+        //FROM final
+        //ORDER BY candle_time;
+
+        //-- RESULT SET 4: absorption/spoof events (filtered)
+        //SELECT
+        //    candle_time, absorption_count, spoof_count
+        //FROM final
+        //WHERE absorption_count > 0 OR spoof_count > 0
+        //ORDER BY candle_time;
+
+        //-- RESULT SET 5: divergence alerts (non-neutral)
+        //SELECT
+        //    candle_time, cvd_divergence
+        //FROM final
+        //WHERE cvd_divergence <> 'Neutral'
+        //ORDER BY candle_time;
+        //";
+
+
+        //                    using (var cmd = new NpgsqlCommand(sql, con))
+        //                    {
+        //                        cmd.Parameters.AddWithValue("instrumentName", symbol);
+        //                        cmd.Parameters.AddWithValue("startUtc", startUtc);
+        //                        cmd.Parameters.AddWithValue("endUtc", endUtc);
+        //                        cmd.Parameters.AddWithValue("aggmin", aggmin);
+        //                        // Note: aggmin parameter is not used in the query - you might want to remove it
+        //                        // or add aggregation logic if needed
+        //                        using (var reader = await cmd.ExecuteReaderAsync())
+        //                        {
+        //                            // 1st result → ticks
+        //                            var ticks = new DataTable();
+        //                            ticks.Load(reader);
+
+        //                            // Move to next SELECT
+        //                            await reader.NextResultAsync();
+
+        //                            // 2nd result → candles
+        //                            var candles = new DataTable();
+        //                            candles.Load(reader);
+
+        //                            await reader.NextResultAsync();
+
+        //                            // 3rd result → final cvd
+        //                            var final = new DataTable();
+        //                            final.Load(reader);
+
+        //                            await reader.NextResultAsync();
+
+        //                            // 4th → absorption
+        //                            var absorption = new DataTable();
+        //                            absorption.Load(reader);
+
+        //                            await reader.NextResultAsync();
+
+        //                            // 5th → divergences
+        //                            var divergence = new DataTable();
+        //                            divergence.Load(reader);
+
+        //                            // Now bind each table to separate datagrids:
+        //                            //TickGrid.ItemsSource = ticks.DefaultView;
+        //                            //CandleGrid.ItemsSource = candles.DefaultView;
+        //                            //CVDGrid.ItemsSource = final.DefaultView;
+        //                            //AbsorptionGrid.ItemsSource = absorption.DefaultView;
+        //                            //DivergenceGrid.ItemsSource = divergence.DefaultView;
+        //                        }
+
+        //                        //var dt = new DataTable();
+        //                        //using (var reader = await cmd.ExecuteReaderAsync())
+        //                        //{
+        //                        //    dt.Load(reader);
+        //                        //}
+
+        //                        DataGridCVD.ItemsSource = dt.DefaultView;
+        //                        MessageBox.Show("Done");
+        //                    }
+        //                }
+        //            }
+        //            catch (Exception ex)
+        //            {
+        //                MessageBox.Show($"Error: {ex.Message}");
+        //            }
+        //        }
     }
 
 }

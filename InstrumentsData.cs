@@ -109,7 +109,7 @@ namespace CVD
                                         && !x.trading_symbol.EndsWith("PE") // Exclude Put Options
                                         && x.instrument_type == "FUT") // Keep only Futures
                             .ToList();
-
+            
             var expiry = fnoList
                             .Select(x => ParseExpiry(x.expiry))
                             .OrderBy(d => d)
@@ -123,6 +123,14 @@ namespace CVD
                             .Where(x => ParseExpiry(x.expiry).Date == ExpiryDate.Date)
                              .ToList();
 
+            //foreach (var fno in fnoList.ToList())
+            //{
+            //    string fnoName = fno.name;
+            //    if (fnoName!="NIFTY")
+            //    {
+            //        fnoList.Remove(fno);
+            //    }
+            //}
             var niftyOptionsAll = instruments
                  .Where(x => x.name != null
                              && x.name.Equals("NIFTY", StringComparison.OrdinalIgnoreCase)

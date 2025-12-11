@@ -13,21 +13,23 @@
         <!-- Header Panel -->
         <DockPanel Margin="8" Grid.Row="0">
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
-                <TextBlock Text="CVD Trend Scanner" FontSize="18" Foreground="White" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <TextBlock Text="CVD Trend Scanner" Visibility="Collapsed" FontSize="18" Foreground="White" VerticalAlignment="Center" Margin="0,0,12,0"/>
                 <Button Content="Connect WS" Width="100" Margin="0,0,6,0" Click="ConnectBtn_Click"/>
                 <StackPanel Orientation="Horizontal" Margin="0 0 0 10">
                     <ComboBox x:Name="InstrumentCombo" Width="200" FontSize="16"/>
                     <Button Content="Search" Width="120" Height="35" Margin="10 0 0 0" Click="Search_Click"/>
                     <Button Content="Nifty" Width="120" Height="35" Margin="10 0 0 0" Click="Nifty_Click"/>
                     <Button Content="Sector" Width="120" Height="35" Margin="10 0 0 0" Click="SectorCVD_Click"/>
+                    <Button Content="ChkSpike" Width="120" Height="35" Margin="10 0 0 0" Click="ScanCvdSpikesButton_Click"/>
+                    <Button Content="cvd" Width="120" Height="35" Margin="10 0 0 0" Click="cvd_click"/>
                 </StackPanel>
-                <Button Content="Scan Signals" Width="100" Margin="0,0,6,0" Click="ScanSignals_Click" Background="Green" Foreground="White"/>
+                <Button Content="Scan Signals" Visibility="Collapsed" Width="100" Margin="0,0,6,0" Click="ScanSignals_Click" Background="Green" Foreground="White"/>
                 <StackPanel Orientation="Horizontal" Margin="0,10,0,10">
                     <!-- Date Selection -->
                     <DatePicker x:Name="EndDatePicker" SelectedDateChanged="EndDatePicker_SelectedDateChanged" Width="140"/>
 
                     <!-- Time Selection -->
-                    <ComboBox x:Name="EndTimeComboBox" Width="100" SelectionChanged="EndTimeComboBox_SelectionChanged" Margin="10,0,0,0"/>
+                    <!--<ComboBox x:Name="EndTimeComboBox" Width="100" SelectionChanged="EndTimeComboBox_SelectionChanged" Margin="10,0,0,0"/>-->
                 </StackPanel>
 
                 <ComboBox x:Name="Timecom" Width="100" Height="30" Margin="10,10,10,10">
@@ -398,7 +400,10 @@
                     
                 </TabItem>
                 <TabItem Header="Spike1">
-                    <DataGrid x:Name="CupPatternGrid" AutoGenerateColumns="True"/>
+                    <DataGrid x:Name="CupPatternGrid" AutoGenerateColumns="True" Height="536"/>
+                </TabItem>
+                <TabItem Header="Logs">
+                    <DataGrid x:Name="DataGridCVDSpikes" AutoGenerateColumns="True" Height="536"/>
                 </TabItem>
             </TabControl>
 
