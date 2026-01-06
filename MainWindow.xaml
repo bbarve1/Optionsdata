@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:lvc="clr-namespace:LiveCharts.Wpf;assembly=LiveCharts.Wpf"
-        Title="CVD Trend Scanner" Height="820" Width="1200" Background="#111">
+        Title="CVD Trend Scanner" Height="820" Width="1200" Loaded="Window_Loaded" Background="#111">
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -12,47 +12,45 @@
 
         <!-- Header Panel -->
         <DockPanel Margin="8" Grid.Row="0">
-            <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
-                <TextBlock Text="CVD Trend Scanner" Visibility="Collapsed" FontSize="18" Foreground="White" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <Button Content="Connect WS" Width="100" Margin="0,0,6,0" Click="ConnectBtn_Click"/>
-                <StackPanel Orientation="Horizontal" Margin="0 0 0 10">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+
+
+
+                <StackPanel Orientation="Horizontal" Grid.Row="0" Margin="0 0 0 10">
+                    <Button Content="Connect WS" Width="100" Margin="0,0,6,0" Click="ConnectBtn_Click"/>
                     <ComboBox x:Name="InstrumentCombo" Width="200" FontSize="16"/>
                     <Button Content="Search" Width="120" Height="35" Margin="10 0 0 0" Click="Search_Click"/>
                     <Button Content="Nifty" Width="120" Height="35" Margin="10 0 0 0" Click="Nifty_Click"/>
                     <Button Content="Sector" Width="120" Height="35" Margin="10 0 0 0" Click="SectorCVD_Click"/>
                     <Button Content="ChkSpike" Width="120" Height="35" Margin="10 0 0 0" Click="ScanCvdSpikesButton_Click"/>
                     <Button Content="cvd" Width="120" Height="35" Margin="10 0 0 0" Click="cvd_click"/>
-                </StackPanel>
-                <Button Content="Scan Signals" Visibility="Collapsed" Width="100" Margin="0,0,6,0" Click="ScanSignals_Click" Background="Green" Foreground="White"/>
-                <StackPanel Orientation="Horizontal" Margin="0,10,0,10">
-                    <!-- Date Selection -->
+                    <Button Content="Scan Signals" Visibility="Collapsed" Width="100" Margin="0,0,6,0" Click="ScanSignals_Click" Background="Green" Foreground="White"/>
                     <DatePicker x:Name="EndDatePicker" SelectedDateChanged="EndDatePicker_SelectedDateChanged" Width="140"/>
-
-                    <!-- Time Selection -->
-                    <!--<ComboBox x:Name="EndTimeComboBox" Width="100" SelectionChanged="EndTimeComboBox_SelectionChanged" Margin="10,0,0,0"/>-->
+                    <ComboBox x:Name="Timecom" Width="100" Height="30" Margin="10,10,10,10"/>
+                    <Button Content="Back" Width="75" Margin="10,0,0,0"  Click="BackButton_Click"/>
+                    <Button Content="Next" Width="75" Margin="10,0,0,0" Click="NextButton_Click"/>
+                    <Button Content="Fromdb" Width="75" Margin="10,0,0,0" Click="Button_Click"/>
                 </StackPanel>
 
-                <ComboBox x:Name="Timecom" Width="100" Height="30" Margin="10,10,10,10">
 
-                </ComboBox>
-
-                <!-- Navigation Buttons -->
-
-                <Button Content="Back" Width="75" Margin="10,0,0,0"  Click="BackButton_Click"/>
-                <Button Content="Next" Width="75" Margin="10,0,0,0" Click="NextButton_Click"/>
-                <Button Content="Fromdb" Width="75" Margin="10,0,0,0" Click="Button_Click"/>
-
-            </StackPanel>
-
-            <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
-                <TextBlock Text="DB:" Foreground="LightGray" VerticalAlignment="Center" Margin="6,0,4,0"/>
-                <TextBlock x:Name="DbStatus" Text="Not connected" Foreground="Orange" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <TextBlock Text="Conn:" Foreground="LightGray" VerticalAlignment="Center" Margin="6,0,4,0"/>
-                <TextBlock x:Name="ConnectionStatus" Text="Disconnected" Foreground="Orange" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <TextBlock Text="Status:" Foreground="LightGray" VerticalAlignment="Center" Margin="6,0,4,0"/>
-                <TextBlock x:Name="StatusText" Text="Idle" Foreground="LightGray" VerticalAlignment="Center" Margin="0,0,12,0"/>
-                <TextBlock x:Name="Timetext" Text="Idle" Foreground="LightGray" VerticalAlignment="Center" Margin="0,0,12,0"/>
-            </StackPanel>
+                <StackPanel Orientation="Horizontal" Grid.Row="1">
+                    <TextBlock Text="DB:" Foreground="LightGray" VerticalAlignment="Center" Margin="6,0,4,0"/>
+                    <TextBlock x:Name="DbStatus" Text="Not connected" Foreground="Orange" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <TextBlock Text="Conn:" Foreground="LightGray" VerticalAlignment="Center" Margin="6,0,4,0"/>
+                    <TextBlock x:Name="ConnectionStatus" Text="Disconnected" Foreground="Orange" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <TextBlock Text="Status:" Foreground="LightGray" VerticalAlignment="Center" Margin="6,0,4,0"/>
+                    <TextBlock x:Name="StatusText" Text="Idle" Foreground="LightGray" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <TextBlock x:Name="Timetext" Text="Idle" Foreground="LightGray" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <Button  Content="Login" Margin="10 0 10 0" x:Name="Login" Click="Login_Click" Foreground="White" Background="Transparent"  FontWeight="Bold" FontSize="15" />
+                    <TextBox   x:Name="AuthText" Width="100" Visibility="Collapsed" LostFocus="AuthText_LostFocus"  Text="" Foreground="White" Background="White" Margin="10 0 0 0" FontWeight="Bold" FontSize="15"/>
+                    <TextBlock   Margin="15 0" x:Name="Instuctionlab" TextWrapping="Wrap" TextAlignment="Center" Width="200" Text="" Foreground="White" Background="Transparent" FontWeight="Bold" FontSize="15"/>
+                </StackPanel>
+            </Grid>
         </DockPanel>
 
         <Grid Grid.Row="1"  Margin="8">
@@ -376,7 +374,7 @@
                 <TabItem Header="Spike">
                     <DataGrid x:Name="dgSectorCVD" AutoGenerateColumns="False">
                         <DataGrid.Columns>
-                            
+
                             <!-- Bank -->
                             <DataGridTextColumn Header="Bank Delta" Binding="{Binding BankDelta}" Width="100" />
                             <DataGridTextColumn Header="Bank CVD" Binding="{Binding BankCVD}" Width="100" />
@@ -397,7 +395,7 @@
                         </DataGrid.Columns>
 
                     </DataGrid>
-                    
+
                 </TabItem>
                 <TabItem Header="Spike1">
                     <DataGrid x:Name="CupPatternGrid" AutoGenerateColumns="True" Height="536"/>

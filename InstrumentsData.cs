@@ -82,7 +82,7 @@ namespace CVD
                             .Where(x => nifty50Symbols.Contains(x.trading_symbol))
                             .ToList();
 
-            double niftySpot = 25900;
+            double niftySpot = 26100;
             double bankNiftySpot = 55000;
 
             var equityNames = equityList

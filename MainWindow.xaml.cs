@@ -4,6 +4,7 @@ using LiveCharts.Wpf;
 using MongoDB.Bson;
 using MongoDB.Driver;
 using MongoDB.Driver.Core.Configuration;
+using Newtonsoft.Json.Linq;
 using Npgsql;
 using RestSharp;
 using SharpCompress.Common;
@@ -39,6 +40,13 @@ namespace CVD
         //private ObservableCollection<DiversionSignal> _diversion1HourSignals;
         //private ObservableCollection<BigCvdTrade> _bigCvdTrades;
         //private ObservableCollection<CvdSpikeSignal> _cvdSpikeSignals;
+
+        readonly string clientId = "93bf6771-a032-43f7-9a48-34988e18bc04";
+        readonly string clientSecret = "kd8vej7gvr";
+        readonly string redirectUri = "https://www.bhushan.com/";
+        readonly string baseUrl = "https://api.upstox.com/v2/";
+        readonly string connectionString = "Data Source=LAPTOP-3KVKG1RR\\SQLEXPRESS;Initial Catalog=DBSED3204;Integrated Security=True";
+        readonly string TokenURL = "login/authorization/token";
 
         private EnhancedScannerService _scannerService;
         private ObservableCollection<DiversionSignal> _diversion30MinSignals;
@@ -2156,11 +2164,11 @@ ORDER BY bucket_time;
 
         private readonly Dictionary<string, double> _stockWeightages = new Dictionary<string, double>
 {
-    {"RELIANCE FUT 30 DEC 25", 10.3},    // Higher weight = more impact on Nifty
-    {"INFY FUT 30 DEC 25", 3.1},
-    {"HDFCBANK FUT 30 DEC 25", 7.3},
-    {"TCS FUT 30 DEC 25", 5.4},
-    {"ICICIBANK FUT 30 DEC 25", 7.1},
+    {"RELIANCE FUT 27 JAN 26", 10.3},    // Higher weight = more impact on Nifty
+    {"INFY FUT 27 JAN 26", 3.1},
+    {"HDFCBANK FUT 27 JAN 26", 7.3},
+    {"TCS FUT 27 JAN 26", 5.4},
+    {"ICICIBANK FUT 27 JAN 26", 7.1},
 
 };
 
@@ -4039,23 +4047,23 @@ WITH tick_cvd AS (
     FROM raw_ticks
     WHERE ts >= @startUtc AND ts <= @endUtc
 ),
--- Step 2: Create 15-minute candles
+-- Step 2: Create 5-minute candles
 fifteen_min_buckets AS (
     SELECT 
         instrument_name,
         -- Create 15-minute buckets
         DATE_TRUNC('hour', ts) + 
-            FLOOR(EXTRACT(MINUTE FROM ts) / 15) * INTERVAL '15 minutes' as bucket_time,
+            FLOOR(EXTRACT(MINUTE FROM ts) / 5) * INTERVAL '5 minutes' as bucket_time,
         price,
         tick_cvd,
         size,
         ROW_NUMBER() OVER (PARTITION BY instrument_name, 
                           DATE_TRUNC('hour', ts) + 
-                          FLOOR(EXTRACT(MINUTE FROM ts) / 15) * INTERVAL '15 minutes' 
+                          FLOOR(EXTRACT(MINUTE FROM ts) / 5) * INTERVAL '5 minutes' 
                           ORDER BY ts) as rn_asc,
         ROW_NUMBER() OVER (PARTITION BY instrument_name, 
                           DATE_TRUNC('hour', ts) + 
-                          FLOOR(EXTRACT(MINUTE FROM ts) / 15) * INTERVAL '15 minutes' 
+                          FLOOR(EXTRACT(MINUTE FROM ts) / 5) * INTERVAL '5 minutes' 
                           ORDER BY ts DESC) as rn_desc
     FROM tick_cvd
 ),
@@ -4132,8 +4140,7 @@ ORDER BY
         WHEN avg_cvd_20 > 0 THEN ABS(fifteen_min_cvd) / avg_cvd_20 
         ELSE 0 
     END DESC,
-    bucket_time DESC
-LIMIT 100;";
+    bucket_time DESC;";
 
                     using (var cmd = new NpgsqlCommand(sql, con))
                     {
@@ -4504,17 +4511,20 @@ final_cvd AS (
 -- RESULT 2: Candles
 SELECT
     candle_time,
-
+    close_price,
     ROUND(((price_buy_delta - price_sell_delta) / 100000.0)::numeric, 2) AS Price_CVD,
-    ROUND(((true_buy_delta - true_sell_delta) / 100000.0)::numeric, 2) AS True_CVD,
-    ROUND(((hybrid_buy_delta - hybrid_sell_delta) / 100000.0)::numeric, 2) AS Hybrid_CVD,
-    ROUND((total_volume / 100000.0)::numeric, 2) AS total_volume,
-    ROUND((last_oi / 100000.0)::numeric, 2) AS last_oi,
-    ROUND((true_cvd_point / 100000.0)::numeric, 2) AS true_cvd_point
-
+    ROUND(((true_buy_delta - true_sell_delta) / 100000.0)::numeric, 2) AS True_CVD
+    
+    
+    
 FROM candles
 ORDER BY candle_time;
 ";
+                    //ROUND(((hybrid_buy_delta - hybrid_sell_delta) / 100000.0)::numeric, 2) AS Hybrid_CVD,
+                    //ROUND((total_volume / 100000.0)::numeric, 2) AS total_volume,
+                    //ROUND((last_oi / 100000.0)::numeric, 2) AS last_oi,
+                    //ROUND((true_cvd_point / 100000.0)::numeric, 2) AS true_cvd_point
+
 
                     //-- RESULT 1: Ticks
                     //SELECT *
@@ -4548,7 +4558,7 @@ ORDER BY candle_time;
                         cmd.Parameters.AddWithValue("startUtc", startUtc);
                         cmd.Parameters.AddWithValue("endUtc", endUtc);
                         cmd.Parameters.AddWithValue("aggmin", aggmin);
-
+                        //D:\pythontest\.venv\newcode.py
                         using (var reader = await cmd.ExecuteReaderAsync())
                         {
                             // RESULT 1: ticks
@@ -4578,6 +4588,104 @@ ORDER BY candle_time;
             catch (Exception ex)
             {
                 MessageBox.Show($"Error: {ex.Message}");
+            }
+        }
+
+        private async void Login_Click(object sender, RoutedEventArgs e)
+        {
+            AuthText.Visibility = Visibility.Visible;
+            string Mygeturl = $"https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=" + clientId + "&redirect_uri=" + redirectUri;
+            Clipboard.SetText(Mygeturl);
+            await Task.CompletedTask;
+        }
+        private async Task GetAccessToken(string authorizationCode)
+        {
+            //string accessToken = "";
+            var client = new RestClient(baseUrl);
+            var request = new RestRequest(TokenURL, Method.Post);
+
+            request.AddHeader("Content-Type", "application/x-www-form-urlencoded");
+            request.AddParameter("client_id", clientId);
+            request.AddParameter("client_secret", clientSecret);
+            request.AddParameter("redirect_uri", redirectUri);
+            request.AddParameter("grant_type", "authorization_code");
+            request.AddParameter("code", authorizationCode);
+
+            RestResponse response = client.Execute(request);
+            if (response.IsSuccessful)
+            {
+                JObject jsonResponse = JObject.Parse(response.Content);
+                accessToken = (string)jsonResponse["access_token"];
+            }
+            else
+            {
+                MessageBox.Show(response.StatusCode.ToString());
+
+            }
+            var connectionString = "mongodb://localhost:27017"; // Update if needed
+            var client1 = new MongoClient(connectionString);
+
+            var database = client1.GetDatabase("StockDB");
+            var collection = database.GetCollection<BsonDocument>("GetAccessToken");
+
+            var filter = Builders<BsonDocument>.Filter.Empty;
+            var update = Builders<BsonDocument>.Update.Set("Token", accessToken);
+            var options = new UpdateOptions { IsUpsert = true };
+
+            collection.UpdateOne(filter, update, options);
+            await Task.CompletedTask;
+        }
+        private async void AuthText_LostFocus(object sender, RoutedEventArgs e)
+        {
+            string authorizationCode = AuthText.Text;
+
+            if (authorizationCode == "")
+            {
+                MessageBox.Show("Kindly Enter Auth Code");
+                return;
+            }
+            await GetAccessToken(authorizationCode);
+            if (accessToken == "")
+            {
+                return;
+            }
+            Instuctionlab.Text = "Upstox Login Successfull..";
+            AuthText.Visibility = Visibility.Collapsed;
+        }
+
+        private async void Window_Loaded(object sender, RoutedEventArgs e)
+        {
+            var connectionString = "mongodb://localhost:27017"; // Replace with your MongoDB URI
+            var client1 = new MongoClient(connectionString);
+
+            var database = client1.GetDatabase("StockDB");
+            var collection = database.GetCollection<BsonDocument>("GetAccessToken");
+
+            var allDocuments = await collection.Find(new BsonDocument()).ToListAsync();
+
+            // 4. Loop through results
+            foreach (var doc in allDocuments)
+            {
+                accessToken = doc["Token"].AsString;
+                // Break if you only need the first one
+                break;
+            }
+            var client = new RestClient(baseUrl);
+            var request = new RestRequest("market-quote/quotes", Method.Get);
+            request.AddHeader("Authorization", $"Bearer {accessToken}");
+            request.AddParameter("symbol", "NSE_EQ|INE466L01038");
+            RestResponse response = client.Execute(request);
+            if (response.IsSuccessful)
+            {
+                Instuctionlab.Text = "Upstox Login Successfull..";
+
+            }
+            else
+            {
+                //UpstoxLoingStatus = "Login Required";
+                Instuctionlab.Text = "Upstox Login Required..";
+                MessageBox.Show("Login Required");  
+
             }
         }
 
